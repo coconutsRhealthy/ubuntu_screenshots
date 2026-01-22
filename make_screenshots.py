@@ -1,45 +1,62 @@
 import subprocess
 import time
 import os
+from datetime import datetime
+import re
 
 SITES = [
     "https://www.nos.nl",
     "https://www.telegraaf.nl",
     "https://www.nu.nl",
     "https://www.buienradar.nl",
-    "https://www.google.nl"
+    "https://www.google.nl",
+    "https://www.wikipedia.org",
+    "https://www.bbc.com",
+    "https://www.cnn.com",
+    "https://www.reddit.com",
+    "https://www.twitter.com"
 ]
 
 SCREENSHOT_DIR = "/home/lennart/screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-# 1\ufe0f\u20e3 Firefox starten voor de hele sessie
+def sanitize_site_name(url):
+    # Haal domein uit URL en vervang ongewenste tekens voor bestandsnaam
+    site = re.sub(r'https?://(www\.)?', '', url)
+    site = re.sub(r'[^A-Za-z0-9_-]', '_', site)
+    return site
+
+# 1️⃣ Start 1 Firefox-instance voor alle sites
 firefox_process = subprocess.Popen(["firefox", "--new-window"])
 time.sleep(5)  # even tijd geven om te starten
 
 try:
-    for idx, site in enumerate(SITES, start=1):
-        # 2\ufe0f\u20e3 Nieuwe tab openen met URL
+    for site in SITES:
+        # 2️⃣ Nieuwe tab openen
         subprocess.run(["firefox", "--new-tab", site])
         print(f"Opening {site}")
 
-        time.sleep(8)  # wachten tot pagina geladen
+        # 3️⃣ Wacht tot pagina geladen is
+        time.sleep(8)
 
-        # 3\ufe0f\u20e3 Screenshot van actief venster
-        screenshot_path = os.path.join(SCREENSHOT_DIR, f"site_{idx}.png")
+        # 4️⃣ Screenshot maken
+        site_name = sanitize_site_name(site)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_path = os.path.join(SCREENSHOT_DIR, f"{site_name}_{timestamp}.png")
+
         subprocess.run(["gnome-screenshot", "-w", "-f", screenshot_path])
         print(f"Screenshot opgeslagen: {screenshot_path}")
 
         time.sleep(2)  # kleine pauze tussen sites
 
 finally:
-    # 4\ufe0f\u20e3 Firefox netjes afsluiten
+    # 5️⃣ Firefox afsluiten na alle sites
     print("Sluit Firefox netjes af...")
-    firefox_process.terminate()  # stuur netjes een afsluit-signaal
+    firefox_process.terminate()
     try:
-        firefox_process.wait(timeout=10)  # wacht tot Firefox klaar is
+        firefox_process.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        print("Firefox reageerde niet, geforceerd afsluiten")
+        print("Geforceerd afsluiten")
         firefox_process.kill()
 
 print("Klaar met alle screenshots!")
