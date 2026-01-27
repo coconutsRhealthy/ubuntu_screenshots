@@ -1,90 +1,76 @@
+import time
+import os
+import requests
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
 from datetime import datetime
-import os
-import re
-import time
 
-# 📌 Jouw lijst met sites
-SITES = [
-    "https://www.nos.nl",
-    "https://www.telegraaf.nl",
-    "https://www.nu.nl",
-    "https://www.buienradar.nl",
-    "https://www.google.nl",
-    "https://www.wikipedia.org",
-    "https://www.bbc.com",
-    "https://www.cnn.com",
-    "https://www.reddit.com",
-    "https://www.twitter.com"
-]
+# 📌 URL naar je sites.json op GitHub (RAW)
+SITES_JSON_URL = (
+    "https://raw.githubusercontent.com/wgknl/diski-assets/main/json/sites.json"
+)
 
 # 📌 Basis map voor screenshots
 SCREENSHOT_DIR = "/home/lennart/screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-# 📌 Functie om URL om te zetten naar sitenaam (bijv. nos, nu, bbc)
-def sanitize_site_name(url):
-    site = re.sub(r'https?://(www\.)?', '', url)
-    site = site.split('/')[0]   # alleen domein
-    site = site.split('.')[0]   # alleen sitenaam
-    return site
+# 📌 Functie: haal sites.json op van GitHub
+def load_sites_from_github():
+    try:
+        response = requests.get(SITES_JSON_URL, timeout=15)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print("⚠️ Kon sites.json niet laden van GitHub:", e)
+        exit(1)
 
-# 📌 Functie om mappenstructuur + screenshotpad te maken
-def build_screenshot_path(base_dir, site_name):
+# 📌 Functie: build screenshot path
+def build_screenshot_path(base_dir, webshop_name):
     now = datetime.now()
-
     year = now.strftime("%Y")
     month = now.strftime("%m")
     day = now.strftime("%d")
     timestamp = now.strftime("%Y%m%d_%H%M%S")
 
-    dir_path = os.path.join(
-        base_dir,
-        site_name,
-        year,
-        month,
-        day
-    )
-
-    # Mappen aanmaken indien ze niet bestaan
+    dir_path = os.path.join(base_dir, webshop_name, year, month, day)
     os.makedirs(dir_path, exist_ok=True)
 
-    filename = f"{site_name}_{timestamp}.png"
+    filename = f"{webshop_name}_{timestamp}.png"
     return os.path.join(dir_path, filename)
+
+# 📌 Load sites from GitHub
+SITES = load_sites_from_github()
 
 # 🔹 Selenium setup
 options = Options()
 options.headless = False  # GUI zichtbaar
 
-# 🔹 Gebruik jouw bestaande Snap Firefox-profiel
 PROFILE_PATH = "/home/lennart/snap/firefox/common/.mozilla/firefox/gkmgf18h.default"
 options.profile = PROFILE_PATH
 
-# 🔹 Service verwijzing naar geckodriver
 service = Service(executable_path="/snap/bin/geckodriver")
 
-# 🔹 Start browser
 driver = webdriver.Firefox(service=service, options=options)
-
-# Zorg dat er altijd minimaal één tab open is
-driver.get("about:blank")
+driver.get("about:blank")  # zorg voor minstens 1 tab
 
 try:
     for site in SITES:
+        webshop_name = site["webshop_name"]
+        webshop_url = site["webshop_url"]
+
+        print(f"Opening {webshop_name} → {webshop_url}")
+
         # 1️⃣ Nieuwe tab openen
         driver.execute_script("window.open('');")
         driver.switch_to.window(driver.window_handles[-1])
-        driver.get(site)
-        print(f"Opening {site}")
+        driver.get(webshop_url)
 
         # 2️⃣ Wacht tot pagina geladen is
         time.sleep(8)
 
         # 3️⃣ Screenshot maken
-        site_name = sanitize_site_name(site)
-        screenshot_path = build_screenshot_path(SCREENSHOT_DIR, site_name)
+        screenshot_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
         driver.save_screenshot(screenshot_path)
         print(f"Screenshot opgeslagen: {screenshot_path}")
 
@@ -94,6 +80,5 @@ try:
         time.sleep(1)
 
 finally:
-    # 🔹 Hele browser netjes afsluiten
     driver.quit()
-    print("Klaar met alle screenshots!")
+    print("✅ Klaar met alle screenshots!")
