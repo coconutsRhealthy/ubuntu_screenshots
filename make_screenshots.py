@@ -20,15 +20,39 @@ SITES = [
     "https://www.twitter.com"
 ]
 
-# 📌 Map voor screenshots
+# 📌 Basis map voor screenshots
 SCREENSHOT_DIR = "/home/lennart/screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-# 📌 Functie om URL om te zetten naar een bruikbare bestandsnaam
+# 📌 Functie om URL om te zetten naar sitenaam (bijv. nos, nu, bbc)
 def sanitize_site_name(url):
     site = re.sub(r'https?://(www\.)?', '', url)
-    site = re.sub(r'[^A-Za-z0-9_-]', '_', site)
+    site = site.split('/')[0]   # alleen domein
+    site = site.split('.')[0]   # alleen sitenaam
     return site
+
+# 📌 Functie om mappenstructuur + screenshotpad te maken
+def build_screenshot_path(base_dir, site_name):
+    now = datetime.now()
+
+    year = now.strftime("%Y")
+    month = now.strftime("%m")
+    day = now.strftime("%d")
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+
+    dir_path = os.path.join(
+        base_dir,
+        site_name,
+        year,
+        month,
+        day
+    )
+
+    # Mappen aanmaken indien ze niet bestaan
+    os.makedirs(dir_path, exist_ok=True)
+
+    filename = f"{site_name}_{timestamp}.png"
+    return os.path.join(dir_path, filename)
 
 # 🔹 Selenium setup
 options = Options()
@@ -36,7 +60,7 @@ options.headless = False  # GUI zichtbaar
 
 # 🔹 Gebruik jouw bestaande Snap Firefox-profiel
 PROFILE_PATH = "/home/lennart/snap/firefox/common/.mozilla/firefox/gkmgf18h.default"
-options.profile = PROFILE_PATH  # profiel via Options instellen
+options.profile = PROFILE_PATH
 
 # 🔹 Service verwijzing naar geckodriver
 service = Service(executable_path="/snap/bin/geckodriver")
@@ -60,14 +84,13 @@ try:
 
         # 3️⃣ Screenshot maken
         site_name = sanitize_site_name(site)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        screenshot_path = os.path.join(SCREENSHOT_DIR, f"{site_name}_{timestamp}.png")
+        screenshot_path = build_screenshot_path(SCREENSHOT_DIR, site_name)
         driver.save_screenshot(screenshot_path)
         print(f"Screenshot opgeslagen: {screenshot_path}")
 
         # 4️⃣ Tab sluiten
         driver.close()
-        driver.switch_to.window(driver.window_handles[0])  # terug naar eerste tab
+        driver.switch_to.window(driver.window_handles[0])
         time.sleep(1)
 
 finally:
