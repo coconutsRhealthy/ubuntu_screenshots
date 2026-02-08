@@ -12,7 +12,7 @@ SITES_JSON_URL = (
 )
 
 # 📌 Basis map voor screenshots
-SCREENSHOT_DIR = "/home/lennart/screenshots"
+SCREENSHOT_DIR = r"/run/user/1000/gvfs/dav+sd:host=Spice%2520client%2520folder._webdav._tcp.local/screenshots"
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 # 📌 Functie: haal sites.json op van GitHub
