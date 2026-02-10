@@ -5,6 +5,7 @@ from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
 from datetime import datetime
+from PIL import Image
 
 # 📌 URL naar je sites.json op GitHub (RAW)
 SITES_JSON_URL = (
@@ -36,7 +37,7 @@ def build_screenshot_path(base_dir, webshop_name):
     dir_path = os.path.join(base_dir, webshop_name, year, month, day)
     os.makedirs(dir_path, exist_ok=True)
 
-    filename = f"{webshop_name}_{timestamp}.png"
+    filename = f"{webshop_name}_{timestamp}.jpg"
     return os.path.join(dir_path, filename)
 
 # 📌 Load sites from GitHub
@@ -69,10 +70,19 @@ try:
         # 2️⃣ Wacht tot pagina geladen is
         time.sleep(8)
 
-        # 3️⃣ Screenshot maken
-        screenshot_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
-        driver.save_screenshot(screenshot_path)
-        print(f"Screenshot opgeslagen: {screenshot_path}")
+        # 3️⃣ Screenshot maken (PNG → JPEG)
+        jpg_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
+        png_path = jpg_path.replace(".jpg", ".png")
+
+        driver.save_screenshot(png_path)
+
+        with Image.open(png_path) as img:
+            rgb_img = img.convert("RGB")  # JPEG ondersteunt geen alpha
+            rgb_img.save(jpg_path, "JPEG", quality=85, optimize=True)
+
+        os.remove(png_path)
+
+        print(f"Screenshot opgeslagen: {jpg_path}")
 
         # 4️⃣ Tab sluiten
         driver.close()
