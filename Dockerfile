@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-# Install Chromium + dependencies
+# -----------------------------
+# System dependencies
+# -----------------------------
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -15,23 +17,36 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libxdamage1 \
     libxrandr2 \
-    xdg-utils \
+    libjpeg62-turbo \
+    zlib1g \
     ca-certificates \
     --no-install-recommends \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Environment variables
+# -----------------------------
+# Environment
+# -----------------------------
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# Install Python dependencies
+# -----------------------------
+# Python dependencies
+# -----------------------------
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
+# -----------------------------
 # Copy app
+# -----------------------------
 COPY screenshot.py .
 
+# -----------------------------
+# Run
+# -----------------------------
 CMD ["python", "screenshot.py"]
