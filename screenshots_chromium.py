@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import datetime
 from PIL import Image
@@ -6,45 +7,36 @@ from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException
 
 
-# --------------------------------------------------
-# 📌 Config
-# --------------------------------------------------
-
+# 📌 URL naar sites.json op GitHub (RAW)
 SITES_JSON_URL = (
     "https://raw.githubusercontent.com/wgknl/diski-assets/main/json/sites.json"
 )
 
+# 📌 Basis map voor screenshots (oude structuur behouden)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCREENSHOT_DIR = os.path.join(BASE_DIR, "screenshots")
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-PAGE_LOAD_TIMEOUT = 20
-
 
 # --------------------------------------------------
-# 📌 Sites ophalen van GitHub
+# 📌 Sites ophalen van GitHub (oude logica)
 # --------------------------------------------------
-
 def load_sites_from_github():
     try:
         response = requests.get(SITES_JSON_URL, timeout=15)
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print("⚠️ Kon sites.json niet laden:", e)
+        print("⚠️ Kon sites.json niet laden van GitHub:", e)
         exit(1)
 
 
 # --------------------------------------------------
-# 📌 Screenshot pad bouwen
+# 📌 Screenshot pad bouwen (oude structuur)
+# webshop/jaar/maand/dag/webshop_timestamp.jpg
 # --------------------------------------------------
-
 def build_screenshot_path(base_dir, webshop_name):
     now = datetime.now()
     year = now.strftime("%Y")
@@ -60,9 +52,8 @@ def build_screenshot_path(base_dir, webshop_name):
 
 
 # --------------------------------------------------
-# 🔹 Chromium setup
+# 🔹 Chromium Selenium setup
 # --------------------------------------------------
-
 chrome_options = Options()
 chrome_options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
 
@@ -70,6 +61,8 @@ chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_argument("--window-size=1920,1080")
+
+# Performance tweaks
 chrome_options.add_argument("--disable-notifications")
 chrome_options.add_argument("--disable-infobars")
 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -77,24 +70,17 @@ chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
 driver = webdriver.Chrome(service=service, options=chrome_options)
 
-wait = WebDriverWait(driver, PAGE_LOAD_TIMEOUT)
-
 
 # --------------------------------------------------
-# 🍪 Cookie killer
+# 🍪 Cookie killer JS (uit nieuw script)
 # --------------------------------------------------
-
 COOKIE_KILLER_JS = """
 (function() {
-
     function killOverlays() {
-
-        // 1. Klik op bekende consent buttons
         const buttons = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"));
 
         buttons.forEach(btn => {
             const text = (btn.innerText || btn.value || "").toLowerCase().trim();
-
             if (
                 text.includes("accept") ||
                 text.includes("agree") ||
@@ -110,7 +96,6 @@ COOKIE_KILLER_JS = """
             }
         });
 
-        // 2. Verwijder cookie/consent overlays
         const selectors = [
             "[id*='cookie']",
             "[class*='cookie']",
@@ -130,14 +115,11 @@ COOKIE_KILLER_JS = """
             });
         });
 
-        // 3. Fix scroll lock
         document.body.style.overflow = "auto";
         document.documentElement.style.overflow = "auto";
-
         document.body.style.position = "static";
         document.documentElement.style.position = "static";
 
-        // 4. Verwijder vaste backdrops
         document.querySelectorAll("*").forEach(el => {
             const style = window.getComputedStyle(el);
             if (
@@ -150,12 +132,8 @@ COOKIE_KILLER_JS = """
         });
     }
 
-    // Direct uitvoeren
     killOverlays();
-
-    // Nogmaals na 1 seconde (lazy injected modals)
     setTimeout(killOverlays, 1000);
-
 })();
 """
 
@@ -165,25 +143,8 @@ def clean_page():
 
 
 # --------------------------------------------------
-# ⏳ Slim wachten tot pagina echt geladen is
-# --------------------------------------------------
-
-def wait_for_page_ready():
-    try:
-        # Wacht tot DOM klaar is
-        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-
-        # Wacht tot body aanwezig is
-        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-
-    except TimeoutException:
-        print("⚠️ Pagina load timeout — we gaan toch screenshotten.")
-
-
-# --------------------------------------------------
 # 🚀 Main
 # --------------------------------------------------
-
 SITES = load_sites_from_github()
 
 try:
@@ -191,36 +152,30 @@ try:
         webshop_name = site["webshop_name"]
         webshop_url = site["webshop_url"]
 
-        print(f"\n🌍 Opening {webshop_name} → {webshop_url}")
+        print(f"Opening {webshop_name} → {webshop_url}")
 
-        try:
-            driver.get(webshop_url)
+        driver.get(webshop_url)
 
-            wait_for_page_ready()
+        time.sleep(3)
+        clean_page()
+        time.sleep(2)
 
-            # Cookie overlays verwijderen
-            clean_page()
+        # 📸 Screenshot maken (PNG → JPEG zoals oude script)
+        jpg_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
+        png_path = jpg_path.replace(".jpg", ".png")
 
-            # Kleine extra wait zodat layout stabiliseert
-            wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
+        driver.save_screenshot(png_path)
 
-            # 📸 Screenshot maken
-            jpg_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
-            png_path = jpg_path.replace(".jpg", ".png")
+        with Image.open(png_path) as img:
+            rgb_img = img.convert("RGB")
+            rgb_img.save(jpg_path, "JPEG", quality=85, optimize=True)
 
-            driver.save_screenshot(png_path)
+        os.remove(png_path)
 
-            with Image.open(png_path) as img:
-                rgb_img = img.convert("RGB")
-                rgb_img.save(jpg_path, "JPEG", quality=85, optimize=True)
+        print(f"Screenshot opgeslagen: {jpg_path}")
 
-            os.remove(png_path)
-
-            print(f"✅ Screenshot opgeslagen: {jpg_path}")
-
-        except Exception as e:
-            print(f"❌ Fout bij {webshop_name}: {e}")
+        time.sleep(1)
 
 finally:
     driver.quit()
-    print("\n🏁 Klaar met alle screenshots!")
+    print("✅ Klaar met alle screenshots!")
