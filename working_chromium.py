@@ -3,7 +3,9 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 
 URLS = [
@@ -51,6 +53,48 @@ driver.execute_script(
 
 
 # ========================================
+# GENERIC COOKIE CLICKER (CASE INSENSITIVE)
+# ========================================
+
+def click_cookie_buttons(driver, timeout=5):
+    keywords = [
+        "accept", "agree", "allow", "consent",
+        "akkoord", "accepteren", "alles accepteren",
+        "accept all", "agree all", "allow all"
+    ]
+
+    xpath_conditions = " or ".join(
+        [f"contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{k}')"
+         for k in keywords]
+    )
+
+    xpath = f"""
+        //button[{xpath_conditions}] |
+        //a[{xpath_conditions}] |
+        //input[@type='submit' and ({xpath_conditions})]
+    """
+
+    try:
+        buttons = WebDriverWait(driver, timeout).until(
+            EC.presence_of_all_elements_located((By.XPATH, xpath))
+        )
+
+        for btn in buttons:
+            try:
+                if btn.is_displayed() and btn.is_enabled():
+                    driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(1)
+                    return True
+            except:
+                continue
+    except:
+        pass
+
+    return False
+
+
+# ========================================
 # SAFE NUCLEAR COOKIE CLEANUP
 # ========================================
 
@@ -59,7 +103,6 @@ NUCLEAR_COOKIE_JS = """
 
     if (!document || !document.body) return;
 
-    // Bekende cookie providers (veilig)
     const knownRoots = [
         "#usercentrics-root",
         "#onetrust-consent-sdk",
@@ -74,7 +117,6 @@ NUCLEAR_COOKIE_JS = """
         });
     });
 
-    // Verwijder dialogs met cookie/consent tekst
     document.querySelectorAll('[role="dialog"]').forEach(el => {
         const text = (el.innerText || "").toLowerCase();
         if (text.includes("cookie") || text.includes("consent")) {
@@ -82,7 +124,6 @@ NUCLEAR_COOKIE_JS = """
         }
     });
 
-    // Scroll unlock
     document.body.style.overflow = "auto";
     document.documentElement.style.overflow = "auto";
 
@@ -122,7 +163,10 @@ for i, url in enumerate(URLS):
 
         driver.execute_script("window.scrollTo(0, 0);")
 
-        # 🔥 Hard cleanup
+        # 1️⃣ Eerst proberen netjes te klikken
+        clicked = click_cookie_buttons(driver)
+
+        # 2️⃣ Daarna alsnog hard cleanup (voor shadow / overlays)
         nuclear_cookie_cleanup(driver)
 
         time.sleep(0.5)
