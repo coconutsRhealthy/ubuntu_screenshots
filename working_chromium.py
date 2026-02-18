@@ -1,4 +1,5 @@
 import os
+import time
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -7,9 +8,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 URLS = [
-    "https://www.asos.com/nl/dames/",
+    "https://nl.lounge.com/",
     "https://www.douglas.nl/nl",
-    "https://www.arket.com/en-nl/"
+    "https://www.arket.com/en-nl/",
+    "https://www.asos.com/nl/dames/"
 ]
 
 OUTPUT_DIR = "screenshots"
@@ -40,6 +42,92 @@ driver.execute_script(
     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 )
 
+# ================================
+# COOKIE / OVERLAY CLEANER
+# ================================
+
+COOKIE_KILLER_JS = """
+(function() {
+
+    function killOverlays() {
+
+        if (!document || !document.body) return;
+
+        const buttons = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"));
+
+        buttons.forEach(btn => {
+            const text = (btn.innerText || btn.value || "").toLowerCase().trim();
+
+            if (
+                text.includes("accept") ||
+                text.includes("agree") ||
+                text.includes("allow") ||
+                text.includes("reject") ||
+                text.includes("decline") ||
+                text.includes("consent") ||
+                text.includes("akkoord") ||
+                text.includes("accepteren") ||
+                text.includes("weigeren")
+            ) {
+                try { btn.click(); } catch(e){}
+            }
+        });
+
+        const selectors = [
+            "[id*='cookie']",
+            "[class*='cookie']",
+            "[id*='consent']",
+            "[class*='consent']",
+            "[aria-label*='cookie']",
+            "[role='dialog']",
+            "[class*='modal']",
+            "[class*='overlay']"
+        ];
+
+        selectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => {
+                if (el && (el.offsetHeight > 100 || el.offsetWidth > 100)) {
+                    try { el.remove(); } catch(e){}
+                }
+            });
+        });
+
+        // Veilig scroll unlock
+        if (document.body) {
+            document.body.style.overflow = "auto";
+            document.body.style.position = "static";
+        }
+
+        if (document.documentElement) {
+            document.documentElement.style.overflow = "auto";
+            document.documentElement.style.position = "static";
+        }
+
+        document.querySelectorAll("*").forEach(el => {
+            try {
+                const style = window.getComputedStyle(el);
+                if (
+                    style &&
+                    style.position === "fixed" &&
+                    parseInt(style.zIndex || 0) > 1000 &&
+                    el.offsetHeight > window.innerHeight * 0.3
+                ) {
+                    el.remove();
+                }
+            } catch(e){}
+        });
+    }
+
+    killOverlays();
+    setTimeout(killOverlays, 1000);
+
+})();
+"""
+
+
+def clean_page():
+    driver.execute_script(COOKIE_KILLER_JS)
+
 for i, url in enumerate(URLS):
     print(f"Opening {url}")
     driver.get(url)
@@ -47,6 +135,18 @@ for i, url in enumerate(URLS):
     WebDriverWait(driver, 15).until(
         EC.presence_of_element_located((By.TAG_NAME, "body"))
     )
+
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+
+    # Kleine extra delay voor lazy JS content
+    time.sleep(2)
+
+    clean_page()
+
+    # Nog kleine delay zodat eventuele animaties verdwijnen
+    time.sleep(1)
 
     screenshot_path = os.path.join(OUTPUT_DIR, f"screenshot_{i+1}.png")
     driver.save_screenshot(screenshot_path)
