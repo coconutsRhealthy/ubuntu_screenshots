@@ -7,20 +7,25 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+
 URLS = [
-    "https://nl.lounge.com/",
+    "https://www.asos.com/nl/dames/",
     "https://www.douglas.nl/nl",
-    "https://www.arket.com/en-nl/",
-    "https://www.asos.com/nl/dames/"
+    "https://www.arket.com/en-nl/"
 ]
 
 OUTPUT_DIR = "screenshots"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+
+# ========================================
+# CHROME CONFIG (Stealth)
+# ========================================
+
 chrome_options = Options()
 chrome_options.binary_location = os.environ.get("CHROME_BIN", "/usr/bin/chromium")
 
-chrome_options.add_argument("--headless")
+chrome_options.add_argument("--headless=new")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_argument("--disable-gpu")
@@ -42,115 +47,132 @@ driver.execute_script(
     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 )
 
-# ================================
-# COOKIE / OVERLAY CLEANER
-# ================================
 
-COOKIE_KILLER_JS = """
+# ========================================
+# COOKIE CLICKER (SAFE & GENERIC)
+# ========================================
+
+def click_cookie_buttons(driver, timeout=5):
+    keywords = [
+        "accept", "agree", "allow", "consent",
+        "akkoord", "accepteren", "alles accepteren",
+        "accept all", "agree all", "allow all"
+    ]
+
+    xpath_conditions = " or ".join(
+        [f"contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{k}')"
+         for k in keywords]
+    )
+
+    xpath = f"""
+        //button[{xpath_conditions}] |
+        //a[{xpath_conditions}] |
+        //input[@type='submit' and ({xpath_conditions})]
+    """
+
+    try:
+        buttons = WebDriverWait(driver, timeout).until(
+            EC.presence_of_all_elements_located((By.XPATH, xpath))
+        )
+
+        for btn in buttons:
+            try:
+                if btn.is_displayed() and btn.is_enabled():
+                    btn.click()
+                    time.sleep(1)
+                    return True
+            except:
+                continue
+    except:
+        pass
+
+    return False
+
+
+# ========================================
+# MILDE JS CLEANER (NO DOM DESTRUCTION)
+# ========================================
+
+COOKIE_CLEANER_JS = """
 (function() {
 
-    function killOverlays() {
+    if (!document || !document.body) return;
 
-        if (!document || !document.body) return;
+    const selectors = [
+        "[id*='cookie']",
+        "[class*='cookie']",
+        "[id*='consent']",
+        "[class*='consent']"
+    ];
 
-        const buttons = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"));
-
-        buttons.forEach(btn => {
-            const text = (btn.innerText || btn.value || "").toLowerCase().trim();
-
-            if (
-                text.includes("accept") ||
-                text.includes("agree") ||
-                text.includes("allow") ||
-                text.includes("reject") ||
-                text.includes("decline") ||
-                text.includes("consent") ||
-                text.includes("akkoord") ||
-                text.includes("accepteren") ||
-                text.includes("weigeren")
-            ) {
-                try { btn.click(); } catch(e){}
+    selectors.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => {
+            if (el && el.offsetHeight < window.innerHeight * 0.7) {
+                try { el.remove(); } catch(e){}
             }
         });
+    });
 
-        const selectors = [
-            "[id*='cookie']",
-            "[class*='cookie']",
-            "[id*='consent']",
-            "[class*='consent']",
-            "[aria-label*='cookie']",
-            "[role='dialog']",
-            "[class*='modal']",
-            "[class*='overlay']"
-        ];
-
-        selectors.forEach(sel => {
-            document.querySelectorAll(sel).forEach(el => {
-                if (el && (el.offsetHeight > 100 || el.offsetWidth > 100)) {
-                    try { el.remove(); } catch(e){}
-                }
-            });
-        });
-
-        // Veilig scroll unlock
-        if (document.body) {
-            document.body.style.overflow = "auto";
-            document.body.style.position = "static";
-        }
-
-        if (document.documentElement) {
-            document.documentElement.style.overflow = "auto";
-            document.documentElement.style.position = "static";
-        }
-
-        document.querySelectorAll("*").forEach(el => {
-            try {
-                const style = window.getComputedStyle(el);
-                if (
-                    style &&
-                    style.position === "fixed" &&
-                    parseInt(style.zIndex || 0) > 1000 &&
-                    el.offsetHeight > window.innerHeight * 0.3
-                ) {
-                    el.remove();
-                }
-            } catch(e){}
-        });
+    if (document.body) {
+        document.body.style.overflow = "auto";
     }
 
-    killOverlays();
-    setTimeout(killOverlays, 1000);
+    if (document.documentElement) {
+        document.documentElement.style.overflow = "auto";
+    }
 
 })();
 """
 
 
-def clean_page():
-    driver.execute_script(COOKIE_KILLER_JS)
+def mild_clean_page(driver):
+    try:
+        driver.execute_script(COOKIE_CLEANER_JS)
+    except:
+        pass
 
-for i, url in enumerate(URLS):
-    print(f"Opening {url}")
-    driver.get(url)
 
-    WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.TAG_NAME, "body"))
-    )
+# ========================================
+# PAGE READY WAITER
+# ========================================
 
-    WebDriverWait(driver, 15).until(
+def wait_for_full_load(driver, timeout=15):
+    WebDriverWait(driver, timeout).until(
         lambda d: d.execute_script("return document.readyState") == "complete"
     )
 
-    # Kleine extra delay voor lazy JS content
-    time.sleep(2)
 
-    clean_page()
+# ========================================
+# MAIN LOOP
+# ========================================
 
-    # Nog kleine delay zodat eventuele animaties verdwijnen
-    time.sleep(1)
+for i, url in enumerate(URLS):
+    print(f"\nOpening {url}")
 
-    screenshot_path = os.path.join(OUTPUT_DIR, f"screenshot_{i+1}.png")
-    driver.save_screenshot(screenshot_path)
-    print(f"Saved: {screenshot_path}")
+    try:
+        driver.get(url)
+
+        wait_for_full_load(driver)
+        time.sleep(2)  # laat lazy JS injecteren
+
+        # Scroll naar boven (belangrijk voor banners)
+        driver.execute_script("window.scrollTo(0, 0);")
+
+        clicked = click_cookie_buttons(driver)
+
+        if not clicked:
+            mild_clean_page(driver)
+
+        time.sleep(1)
+
+        screenshot_path = os.path.join(OUTPUT_DIR, f"screenshot_{i+1}.png")
+        driver.save_screenshot(screenshot_path)
+        print(f"Saved: {screenshot_path}")
+
+    except Exception as e:
+        print(f"Error on {url}: {e}")
+        continue
+
 
 driver.quit()
-print("Done.")
+print("\nDone.")
