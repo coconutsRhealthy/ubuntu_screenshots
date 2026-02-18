@@ -3,15 +3,17 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 
 URLS = [
     "https://www.asos.com/nl/dames/",
     "https://www.douglas.nl/nl",
-    "https://www.arket.com/en-nl/"
+    "https://www.arket.com/en-nl/",
+    "https://nl.lounge.com/",
+    "https://www.zalando.nl/dames-home/",
+    "https://www2.hm.com/nl_nl/index.html",
+    "https://en.aboutyou.nl/your-shop"
 ]
 
 OUTPUT_DIR = "screenshots"
@@ -49,85 +51,48 @@ driver.execute_script(
 
 
 # ========================================
-# COOKIE CLICKER (SAFE & GENERIC)
+# SAFE NUCLEAR COOKIE CLEANUP
 # ========================================
 
-def click_cookie_buttons(driver, timeout=5):
-    keywords = [
-        "accept", "agree", "allow", "consent",
-        "akkoord", "accepteren", "alles accepteren",
-        "accept all", "agree all", "allow all"
-    ]
-
-    xpath_conditions = " or ".join(
-        [f"contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{k}')"
-         for k in keywords]
-    )
-
-    xpath = f"""
-        //button[{xpath_conditions}] |
-        //a[{xpath_conditions}] |
-        //input[@type='submit' and ({xpath_conditions})]
-    """
-
-    try:
-        buttons = WebDriverWait(driver, timeout).until(
-            EC.presence_of_all_elements_located((By.XPATH, xpath))
-        )
-
-        for btn in buttons:
-            try:
-                if btn.is_displayed() and btn.is_enabled():
-                    btn.click()
-                    time.sleep(1)
-                    return True
-            except:
-                continue
-    except:
-        pass
-
-    return False
-
-
-# ========================================
-# MILDE JS CLEANER (NO DOM DESTRUCTION)
-# ========================================
-
-COOKIE_CLEANER_JS = """
+NUCLEAR_COOKIE_JS = """
 (function() {
 
     if (!document || !document.body) return;
 
-    const selectors = [
-        "[id*='cookie']",
-        "[class*='cookie']",
-        "[id*='consent']",
-        "[class*='consent']"
+    // Bekende cookie providers (veilig)
+    const knownRoots = [
+        "#usercentrics-root",
+        "#onetrust-consent-sdk",
+        "#CybotCookiebotDialog",
+        "[id*='cookiebanner']",
+        "[id*='cookie-consent']"
     ];
 
-    selectors.forEach(sel => {
+    knownRoots.forEach(sel => {
         document.querySelectorAll(sel).forEach(el => {
-            if (el && el.offsetHeight < window.innerHeight * 0.7) {
-                try { el.remove(); } catch(e){}
-            }
+            try { el.remove(); } catch(e){}
         });
     });
 
-    if (document.body) {
-        document.body.style.overflow = "auto";
-    }
+    // Verwijder dialogs met cookie/consent tekst
+    document.querySelectorAll('[role="dialog"]').forEach(el => {
+        const text = (el.innerText || "").toLowerCase();
+        if (text.includes("cookie") || text.includes("consent")) {
+            try { el.remove(); } catch(e){}
+        }
+    });
 
-    if (document.documentElement) {
-        document.documentElement.style.overflow = "auto";
-    }
+    // Scroll unlock
+    document.body.style.overflow = "auto";
+    document.documentElement.style.overflow = "auto";
 
 })();
 """
 
 
-def mild_clean_page(driver):
+def nuclear_cookie_cleanup(driver):
     try:
-        driver.execute_script(COOKIE_CLEANER_JS)
+        driver.execute_script(NUCLEAR_COOKIE_JS)
     except:
         pass
 
@@ -155,15 +120,12 @@ for i, url in enumerate(URLS):
         wait_for_full_load(driver)
         time.sleep(2)  # laat lazy JS injecteren
 
-        # Scroll naar boven (belangrijk voor banners)
         driver.execute_script("window.scrollTo(0, 0);")
 
-        clicked = click_cookie_buttons(driver)
+        # 🔥 Hard cleanup
+        nuclear_cookie_cleanup(driver)
 
-        if not clicked:
-            mild_clean_page(driver)
-
-        time.sleep(1)
+        time.sleep(0.5)
 
         screenshot_path = os.path.join(OUTPUT_DIR, f"screenshot_{i+1}.png")
         driver.save_screenshot(screenshot_path)
