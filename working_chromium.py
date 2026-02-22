@@ -59,7 +59,7 @@ driver.execute_script(
 def click_cookie_buttons(driver, timeout=5):
     keywords = [
         "accept", "agree", "allow", "consent",
-        "akkoord", "accepteren", "alles accepteren",
+        "akkoord", "accepteren", "alles accepteren", "alle cookies accepteren", "oké", "alles toestaan",
         "accept all", "agree all", "allow all"
     ]
 
@@ -163,11 +163,9 @@ for i, url in enumerate(URLS):
 
         driver.execute_script("window.scrollTo(0, 0);")
 
-        # 1️⃣ Eerst proberen netjes te klikken
-        clicked = click_cookie_buttons(driver)
-
-        # 2️⃣ Daarna alsnog hard cleanup (voor shadow / overlays)
         nuclear_cookie_cleanup(driver)
+
+        clicked = click_cookie_buttons(driver)
 
         time.sleep(0.5)
 
