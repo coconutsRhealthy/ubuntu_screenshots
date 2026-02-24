@@ -1,3 +1,4 @@
+import boto3
 import io
 import os
 import time
@@ -140,8 +141,23 @@ URLS = {
     "zelesta.nl": "https://zelesta.nl/"
 }
 
-OUTPUT_DIR = "screenshots"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ========================================
+# R2 CONFIG
+# ========================================
+
+R2_ACCOUNT_ID = "secret"
+R2_ACCESS_KEY_ID = "secret"
+R2_SECRET_ACCESS_KEY = "secret"
+R2_BUCKET_NAME = "screenshots"
+
+r2 = boto3.client(
+    "s3",
+    endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+    aws_access_key_id=R2_ACCESS_KEY_ID,
+    aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+    region_name="auto",
+)
 
 
 # ========================================
@@ -270,71 +286,11 @@ def wait_for_full_load(driver, timeout=15):
     )
 
 
-def get_last_processed_shop(output_dir, urls_dict):
-    """
-    Detects the last processed shop based on the newest screenshot filename.
-    Returns tuple:
-        (last_shop_key, latest_filename)
-    """
-
-    files = [
-        f for f in os.listdir(output_dir)
-        if f.endswith(".jpg")
-    ]
-
-    if not files:
-        print("No previous screenshots found. Starting from first shop.")
-        return None, None
-
-    # Sorteer op modificatietijd (nieuwste eerst)
-    files.sort(
-        key=lambda f: os.path.getmtime(os.path.join(output_dir, f)),
-        reverse=True
-    )
-
-    latest_file = files[0]
-    shop_name_from_file = latest_file.split("_")[0]
-
-    for key in urls_dict.keys():
-        safe_key = key.replace(" ", "_").replace(".", "")
-        if safe_key == shop_name_from_file:
-            print(f"Last screenshot detected: {latest_file}")
-            print(f"Resuming AFTER shop: {key}")
-            return key, latest_file
-
-    print(f"Latest screenshot found ({latest_file}) but no matching shop key.")
-    print("Starting from first shop.")
-    return None, latest_file
-
-
-last_shop, last_file = get_last_processed_shop(OUTPUT_DIR, URLS)
-
-# Bepaal of laatste shop ook de laatste in de lijst is
-shop_keys = list(URLS.keys())
-
-if last_shop and shop_keys.index(last_shop) == len(shop_keys) - 1:
-    print(f"\nLast processed shop ({last_shop}) was the final shop in the list.")
-    print("Starting from the beginning (wrap-around mode).\n")
-    last_shop = None  # Force fresh run
-
-start_processing = last_shop is None
-
-if last_shop:
-    print(f"\n--- Resume mode active (based on {last_file}) ---\n")
-else:
-    print("\n--- Fresh run mode ---\n")
-
-
 # ========================================
 # MAIN LOOP
 # ========================================
 
 for key, url in URLS.items():
-
-    if last_shop and not start_processing:
-        if key == last_shop:
-            start_processing = True
-        continue
 
     print(f"\nOpening {key} -> {url}")
 
@@ -355,7 +311,6 @@ for key, url in URLS.items():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         screenshot_filename = f"{safe_key}_{timestamp}.jpg"
-        screenshot_path = os.path.join(OUTPUT_DIR, screenshot_filename)
 
         # Screenshot als PNG bytes in memory
         png_bytes = driver.get_screenshot_as_png()
@@ -363,14 +318,23 @@ for key, url in URLS.items():
         # Open met Pillow
         image = Image.open(io.BytesIO(png_bytes))
 
-        # JPEG ondersteunt geen alpha kanaal → converteren naar RGB
         if image.mode in ("RGBA", "P"):
             image = image.convert("RGB")
 
-        # Opslaan als JPEG (kwaliteit 85–95 is meestal prima)
-        image.save(screenshot_path, "JPEG", quality=85, optimize=True)
+        # JPEG in memory
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=75, optimize=True)
+        buffer.seek(0)
 
-        print(f"Saved: {screenshot_path}")
+        # Upload naar R2
+        r2.put_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=screenshot_filename,
+            Body=buffer,
+            ContentType="image/jpeg",
+        )
+
+        print(f"Uploaded to R2: screenshots/{screenshot_filename}")
 
     except Exception as e:
         print(f"Error on {key}: {e}")
