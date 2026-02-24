@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -178,7 +179,7 @@ driver.execute_script(
 def click_cookie_buttons(driver, timeout=5):
     keywords = [
         "accept", "agree", "allow", "consent",
-        "akkoord", "accepteren", "alles accepteren", "alle cookies accepteren", "oké", "alles toestaan",
+        "akkoord", "accepteren", "alles accepteren", "alle cookies accepteren", "oké", "alles toestaan", "aanvaarden",
         "accept all", "agree all", "allow all"
     ]
 
@@ -267,11 +268,72 @@ def wait_for_full_load(driver, timeout=15):
     )
 
 
+def get_last_processed_shop(output_dir, urls_dict):
+    """
+    Detects the last processed shop based on the newest screenshot filename.
+    Returns tuple:
+        (last_shop_key, latest_filename)
+    """
+
+    files = [
+        f for f in os.listdir(output_dir)
+        if f.endswith(".png")
+    ]
+
+    if not files:
+        print("No previous screenshots found. Starting from first shop.")
+        return None, None
+
+    # Sorteer op modificatietijd (nieuwste eerst)
+    files.sort(
+        key=lambda f: os.path.getmtime(os.path.join(output_dir, f)),
+        reverse=True
+    )
+
+    latest_file = files[0]
+    shop_name_from_file = latest_file.split("_")[0]
+
+    for key in urls_dict.keys():
+        safe_key = key.replace(" ", "_").replace(".", "")
+        if safe_key == shop_name_from_file:
+            print(f"Last screenshot detected: {latest_file}")
+            print(f"Resuming AFTER shop: {key}")
+            return key, latest_file
+
+    print(f"Latest screenshot found ({latest_file}) but no matching shop key.")
+    print("Starting from first shop.")
+    return None, latest_file
+
+
+last_shop, last_file = get_last_processed_shop(OUTPUT_DIR, URLS)
+
+# Bepaal of laatste shop ook de laatste in de lijst is
+shop_keys = list(URLS.keys())
+
+if last_shop and shop_keys.index(last_shop) == len(shop_keys) - 1:
+    print(f"\nLast processed shop ({last_shop}) was the final shop in the list.")
+    print("Starting from the beginning (wrap-around mode).\n")
+    last_shop = None  # Force fresh run
+
+start_processing = last_shop is None
+
+if last_shop:
+    print(f"\n--- Resume mode active (based on {last_file}) ---\n")
+else:
+    print("\n--- Fresh run mode ---\n")
+
+
 # ========================================
 # MAIN LOOP
 # ========================================
 
 for key, url in URLS.items():
+
+    if last_shop and not start_processing:
+        if key == last_shop:
+            start_processing = True
+        continue
+
     print(f"\nOpening {key} -> {url}")
 
     try:
