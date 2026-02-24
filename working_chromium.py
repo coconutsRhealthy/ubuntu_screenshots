@@ -161,7 +161,90 @@ r2 = boto3.client(
 
 
 # ========================================
-# CHROME CONFIG (Stealth)
+# RESUME LOGIC VIA R2
+# ========================================
+
+def get_last_processed_shop_r2(r2_client, bucket_name, urls_dict, prefix):
+    """
+    Haalt nieuwste screenshot op uit R2 (pagination safe)
+    en bepaalt vanaf welke shop we moeten resum'en.
+    """
+
+    objects = []
+    continuation_token = None
+
+    try:
+        while True:
+            if continuation_token:
+                response = r2_client.list_objects_v2(
+                    Bucket=bucket_name,
+                    Prefix=prefix,
+                    ContinuationToken=continuation_token,
+                )
+            else:
+                response = r2_client.list_objects_v2(
+                    Bucket=bucket_name,
+                    Prefix=prefix,
+                )
+
+            if "Contents" in response:
+                objects.extend(response["Contents"])
+
+            if response.get("IsTruncated"):
+                continuation_token = response.get("NextContinuationToken")
+            else:
+                break
+
+        if not objects:
+            print("No previous screenshots found in R2. Starting fresh.")
+            return None, None
+
+        # Sorteer op LastModified (nieuwste eerst)
+        objects.sort(key=lambda obj: obj["LastModified"], reverse=True)
+        latest_object = objects[0]
+        latest_key = latest_object["Key"]
+
+        filename = latest_key.replace(prefix, "")
+        shop_name_from_file = filename.split("_")[0]
+
+        for key in urls_dict.keys():
+            safe_key = key.replace(" ", "_").replace(".", "")
+            if safe_key == shop_name_from_file:
+                print(f"Last screenshot in R2: {latest_key}")
+                print(f"Resuming AFTER shop: {key}")
+                return key, latest_key
+
+        print("Latest screenshot found but no matching shop key.")
+        return None, latest_key
+
+    except Exception as e:
+        print(f"Error checking R2 for resume logic: {e}")
+        return None, None
+
+
+# Bepaal resume status
+last_shop, last_file = get_last_processed_shop_r2(
+    r2, R2_BUCKET_NAME, URLS, R2_PREFIX
+)
+
+shop_keys = list(URLS.keys())
+
+# Wrap-around als laatste shop laatste in lijst was
+if last_shop and shop_keys.index(last_shop) == len(shop_keys) - 1:
+    print(f"\nLast processed shop ({last_shop}) was the final shop.")
+    print("Starting from the beginning (wrap-around mode).\n")
+    last_shop = None
+
+start_processing = last_shop is None
+
+if last_shop:
+    print(f"\n--- Resume mode active (based on {last_file}) ---\n")
+else:
+    print("\n--- Fresh run mode ---\n")
+
+
+# ========================================
+# CHROME CONFIG
 # ========================================
 
 chrome_options = Options()
@@ -291,6 +374,11 @@ def wait_for_full_load(driver, timeout=15):
 # ========================================
 
 for key, url in URLS.items():
+
+    if last_shop and not start_processing:
+        if key == last_shop:
+            start_processing = True
+        continue
 
     print(f"\nOpening {key} -> {url}")
 
