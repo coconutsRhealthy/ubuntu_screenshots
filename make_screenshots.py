@@ -26,6 +26,25 @@ def load_sites_from_github():
         print("⚠️ Kon sites.json niet laden van GitHub:", e)
         exit(1)
 
+# 📌 Functie: check of er vandaag al een screenshot bestaat
+def screenshot_exists_today(base_dir, webshop_name):
+    now = datetime.now()
+    year = now.strftime("%Y")
+    month = now.strftime("%m")
+    day = now.strftime("%d")
+
+    dir_path = os.path.join(base_dir, webshop_name, year, month, day)
+
+    if not os.path.exists(dir_path):
+        return False
+
+    # Check of er al een jpg in de map staat
+    for file in os.listdir(dir_path):
+        if file.lower().endswith(".jpg"):
+            return True
+
+    return False
+
 # 📌 Functie: build screenshot path
 def build_screenshot_path(base_dir, webshop_name):
     now = datetime.now()
@@ -60,6 +79,11 @@ try:
         webshop_name = site["webshop_name"]
         webshop_url = site["webshop_url"]
 
+        # 🚫 Overslaan als er vandaag al een screenshot is
+        if screenshot_exists_today(SCREENSHOT_DIR, webshop_name):
+            print(f"⏭️ {webshop_name} overgeslagen (screenshot bestaat al vandaag)")
+            continue
+
         print(f"Opening {webshop_name} → {webshop_url}")
 
         # 1️⃣ Nieuwe tab openen
@@ -68,7 +92,7 @@ try:
         driver.get(webshop_url)
 
         # 2️⃣ Wacht tot pagina geladen is
-        time.sleep(8)
+        time.sleep(5)
 
         # 3️⃣ Screenshot maken (PNG → JPEG)
         jpg_path = build_screenshot_path(SCREENSHOT_DIR, webshop_name)
