@@ -1,6 +1,8 @@
+import io
 import os
 import time
 from datetime import datetime
+from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -277,7 +279,7 @@ def get_last_processed_shop(output_dir, urls_dict):
 
     files = [
         f for f in os.listdir(output_dir)
-        if f.endswith(".png")
+        if f.endswith(".jpg")
     ]
 
     if not files:
@@ -352,10 +354,22 @@ for key, url in URLS.items():
         safe_key = key.replace(" ", "_").replace(".", "")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        screenshot_filename = f"{safe_key}_{timestamp}.png"
+        screenshot_filename = f"{safe_key}_{timestamp}.jpg"
         screenshot_path = os.path.join(OUTPUT_DIR, screenshot_filename)
 
-        driver.save_screenshot(screenshot_path)
+        # Screenshot als PNG bytes in memory
+        png_bytes = driver.get_screenshot_as_png()
+
+        # Open met Pillow
+        image = Image.open(io.BytesIO(png_bytes))
+
+        # JPEG ondersteunt geen alpha kanaal → converteren naar RGB
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+
+        # Opslaan als JPEG (kwaliteit 85–95 is meestal prima)
+        image.save(screenshot_path, "JPEG", quality=85, optimize=True)
+
         print(f"Saved: {screenshot_path}")
 
     except Exception as e:
