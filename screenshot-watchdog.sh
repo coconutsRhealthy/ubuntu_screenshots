@@ -28,6 +28,7 @@ while true; do
 
     docker run -d \
       --name $NEW_NAME \
+      --cpus="0.5" \
       -v $VOLUME \
       $IMAGE
 

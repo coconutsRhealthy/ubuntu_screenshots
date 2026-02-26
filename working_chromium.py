@@ -2,7 +2,7 @@ import boto3
 import io
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from PIL import Image
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -150,6 +150,7 @@ R2_ACCOUNT_ID = "secret"
 R2_ACCESS_KEY_ID = "secret"
 R2_SECRET_ACCESS_KEY = "secret"
 R2_BUCKET_NAME = "screenshots"
+R2_PREFIX = ""
 
 r2 = boto3.client(
     "s3",
@@ -221,6 +222,54 @@ def get_last_processed_shop_r2(r2_client, bucket_name, urls_dict, prefix):
         print(f"Error checking R2 for resume logic: {e}")
         return None, None
 
+
+def screenshot_recently_uploaded(r2_client, bucket_name, prefix, safe_key, hours=24):
+    """
+    Checkt of er een screenshot voor deze shop bestaat
+    die minder dan X uur oud is.
+    """
+
+    shop_prefix = f"{prefix}{safe_key}_"
+
+    try:
+        response = r2_client.list_objects_v2(
+            Bucket=bucket_name,
+            Prefix=shop_prefix,
+        )
+
+        if "Contents" not in response:
+            print(f"[CHECK] {safe_key}: no previous screenshot found.")
+            return False
+
+        latest_object = max(
+            response["Contents"],
+            key=lambda obj: obj["LastModified"]
+        )
+
+        last_modified = latest_object["LastModified"]
+
+        now = datetime.now(timezone.utc)
+        age = now - last_modified
+
+        if age < timedelta(hours=hours):
+            remaining = timedelta(hours=hours) - age
+            print(
+                f"[SKIP] {safe_key}: "
+                f"last screenshot {age} ago. "
+                f"Next allowed in {remaining}."
+            )
+            return True
+
+        print(
+            f"[OK] {safe_key}: "
+            f"last screenshot {age} ago. Creating new one."
+        )
+
+        return False
+
+    except Exception as e:
+        print(f"[ERROR] 24h check failed for {safe_key}: {e}")
+        return False
 
 # Bepaal resume status
 last_shop, last_file = get_last_processed_shop_r2(
@@ -378,6 +427,14 @@ for key, url in URLS.items():
     if last_shop and not start_processing:
         if key == last_shop:
             start_processing = True
+        continue
+
+    safe_key = key.replace(" ", "_").replace(".", "")
+
+    # 24-uurs check
+    if screenshot_recently_uploaded(
+            r2, R2_BUCKET_NAME, R2_PREFIX, safe_key, hours=24
+    ):
         continue
 
     print(f"\nOpening {key} -> {url}")
