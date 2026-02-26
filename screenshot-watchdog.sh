@@ -7,11 +7,22 @@ VOLUME="$PROJECT_DIR/screenshots:/app/screenshots"
 
 echo "Watchdog gestart..."
 
+# Timestamp van laatste restart initialiseren
+LAST_RESTART=$(date +%s)
+
 while true; do
+  NOW=$(date +%s)
+  ELAPSED=$(( NOW - LAST_RESTART ))
+
+  # Check of er een container draait
   RUNNING=$(docker ps --filter "name=$PREFIX" --format "{{.Names}}")
 
-  if [ -z "$RUNNING" ]; then
-    echo "[$(date)] Geen actieve container gevonden."
+  # Als er geen container is of als 30 minuten voorbij zijn
+  if [ -z "$RUNNING" ] || [ $ELAPSED -ge 1800 ]; then
+    if [ ! -z "$RUNNING" ]; then
+      echo "[$(date)] Stoppen actieve container(s) na 30 min: $RUNNING"
+      docker rm -f $RUNNING
+    fi
 
     # Oude containers opruimen
     OLD=$(docker ps -a --filter "name=$PREFIX" --format "{{.Names}}")
@@ -28,11 +39,12 @@ while true; do
 
     docker run -d \
       --name $NEW_NAME \
-      --cpus="0.5" \
+      --cpus="0.7" \
       -v $VOLUME \
       $IMAGE
 
     echo "[$(date)] Container gestart."
+    LAST_RESTART=$NOW
   fi
 
   sleep 10

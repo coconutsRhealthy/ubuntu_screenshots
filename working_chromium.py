@@ -161,6 +161,91 @@ r2 = boto3.client(
 )
 
 
+def build_latest_screenshot_map(r2_client, bucket_name, prefix):
+    """
+    Scant bucket één keer en bouwt dict:
+    {
+        "about-you": datetime,
+        "adidas": datetime,
+    }
+    Gebaseerd op timestamp in bestandsnaam.
+    """
+    latest_map = {}
+    continuation_token = None
+
+    while True:
+        if continuation_token:
+            response = r2_client.list_objects_v2(
+                Bucket=bucket_name,
+                Prefix=prefix,
+                ContinuationToken=continuation_token,
+            )
+        else:
+            response = r2_client.list_objects_v2(
+                Bucket=bucket_name,
+                Prefix=prefix,
+            )
+
+        if "Contents" not in response:
+            break
+
+        for obj in response["Contents"]:
+            filename = obj["Key"].replace(prefix, "")
+
+            try:
+                shop = filename.split("_")[0]
+                timestamp_str = filename.split("_", 1)[1].replace(".jpg", "")
+
+                dt = datetime.strptime(
+                    timestamp_str, "%Y%m%d_%H%M%S"
+                ).replace(tzinfo=timezone.utc)
+
+                if shop not in latest_map or dt > latest_map[shop]:
+                    latest_map[shop] = dt
+
+            except Exception:
+                continue
+
+        if response.get("IsTruncated"):
+            continuation_token = response.get("NextContinuationToken")
+        else:
+            break
+
+    return latest_map
+
+
+latest_screenshots = build_latest_screenshot_map(
+    r2, R2_BUCKET_NAME, R2_PREFIX
+)
+
+
+def screenshot_recently_uploaded_from_map(latest_map, safe_key, hours=24):
+
+    if safe_key not in latest_map:
+        print(f"[CHECK] {safe_key}: no previous screenshot found.")
+        return False
+
+    last_modified = latest_map[safe_key]
+    now = datetime.now(timezone.utc)
+    age = now - last_modified
+
+    if age < timedelta(hours=hours):
+        remaining = timedelta(hours=hours) - age
+        print(
+            f"[SKIP] {safe_key}: "
+            f"last screenshot {age} ago. "
+            f"Next allowed in {remaining}."
+        )
+        return True
+
+    print(
+        f"[OK] {safe_key}: "
+        f"last screenshot {age} ago. Creating new one."
+    )
+
+    return False
+
+
 # ========================================
 # RESUME LOGIC VIA R2
 # ========================================
@@ -222,54 +307,6 @@ def get_last_processed_shop_r2(r2_client, bucket_name, urls_dict, prefix):
         print(f"Error checking R2 for resume logic: {e}")
         return None, None
 
-
-def screenshot_recently_uploaded(r2_client, bucket_name, prefix, safe_key, hours=24):
-    """
-    Checkt of er een screenshot voor deze shop bestaat
-    die minder dan X uur oud is.
-    """
-
-    shop_prefix = f"{prefix}{safe_key}_"
-
-    try:
-        response = r2_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix=shop_prefix,
-        )
-
-        if "Contents" not in response:
-            print(f"[CHECK] {safe_key}: no previous screenshot found.")
-            return False
-
-        latest_object = max(
-            response["Contents"],
-            key=lambda obj: obj["LastModified"]
-        )
-
-        last_modified = latest_object["LastModified"]
-
-        now = datetime.now(timezone.utc)
-        age = now - last_modified
-
-        if age < timedelta(hours=hours):
-            remaining = timedelta(hours=hours) - age
-            print(
-                f"[SKIP] {safe_key}: "
-                f"last screenshot {age} ago. "
-                f"Next allowed in {remaining}."
-            )
-            return True
-
-        print(
-            f"[OK] {safe_key}: "
-            f"last screenshot {age} ago. Creating new one."
-        )
-
-        return False
-
-    except Exception as e:
-        print(f"[ERROR] 24h check failed for {safe_key}: {e}")
-        return False
 
 # Bepaal resume status
 last_shop, last_file = get_last_processed_shop_r2(
@@ -432,8 +469,8 @@ for key, url in URLS.items():
     safe_key = key.replace(" ", "_").replace(".", "")
 
     # 24-uurs check
-    if screenshot_recently_uploaded(
-            r2, R2_BUCKET_NAME, R2_PREFIX, safe_key, hours=24
+    if screenshot_recently_uploaded_from_map(
+            latest_screenshots, safe_key, hours=24
     ):
         continue
 
@@ -452,8 +489,8 @@ for key, url in URLS.items():
 
         time.sleep(0.5)
 
-        safe_key = key.replace(" ", "_").replace(".", "")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_key = key.replace(" ", "_")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         screenshot_filename = f"{safe_key}_{timestamp}.jpg"
 
