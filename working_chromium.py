@@ -294,7 +294,7 @@ def get_last_processed_shop_r2(r2_client, bucket_name, urls_dict, prefix):
         shop_name_from_file = filename.split("_")[0]
 
         for key in urls_dict.keys():
-            safe_key = key.replace(" ", "_").replace(".", "")
+            safe_key = key.replace(" ", "_")
             if safe_key == shop_name_from_file:
                 print(f"Last screenshot in R2: {latest_key}")
                 print(f"Resuming AFTER shop: {key}")
@@ -466,7 +466,7 @@ for key, url in URLS.items():
             start_processing = True
         continue
 
-    safe_key = key.replace(" ", "_").replace(".", "")
+    safe_key = key.replace(" ", "_")
 
     # 24-uurs check
     if screenshot_recently_uploaded_from_map(

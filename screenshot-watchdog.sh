@@ -1,47 +1,83 @@
 #!/bin/bash
 
+# --------------------------
+# Screenshot Bot Watchdog
+# --------------------------
+
 IMAGE="screenshot-bot"
 PREFIX="screenshot-bot"
 PROJECT_DIR="/root/screenshot-bot"
 VOLUME="$PROJECT_DIR/screenshots:/app/screenshots"
 
+# Parameters
+MAX_RESTARTS=8
+WINDOW_SECONDS=180        # 3 minuten window voor rate-limit
+COOLDOWN_SECONDS=600      # 10 minuten pauze bij te veel starts
+MAX_RUNTIME=1800          # 30 minuten max runtime per container
+
 echo "Watchdog gestart..."
 
-# Timestamp van laatste restart initialiseren
 LAST_RESTART=$(date +%s)
 
 while true; do
   NOW=$(date +%s)
   ELAPSED=$(( NOW - LAST_RESTART ))
 
-  # Check of er een container draait
+  #########################################
+  # 1️⃣ Rate limit check
+  #########################################
+
+  RECENT_COUNT=0
+
+  # Loop over alle containers met jouw prefix
+  for CID in $(docker ps -a --filter "name=$PREFIX" --format "{{.ID}}"); do
+    # Inspect creation timestamp (ISO 8601, versie-onafhankelijk)
+    CREATED=$(docker inspect -f '{{.Created}}' $CID 2>/dev/null)
+    if [ -n "$CREATED" ]; then
+      CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null)
+      if [ -n "$CREATED_TS" ]; then
+        DIFF=$(( NOW - CREATED_TS ))
+        if [ $DIFF -le $WINDOW_SECONDS ]; then
+          RECENT_COUNT=$((RECENT_COUNT + 1))
+        fi
+      fi
+    fi
+  done
+
+  if [ "$RECENT_COUNT" -gt "$MAX_RESTARTS" ]; then
+    echo "[$(date)] $RECENT_COUNT containers gestart in de laatste 3 min. Cooldown $((COOLDOWN_SECONDS/60)) min..."
+    sleep $COOLDOWN_SECONDS
+    continue
+  fi
+
+  #########################################
+  # 2️⃣ Oude gestopte containers opruimen (>10 min)
+  #########################################
+
+  docker container prune -f --filter "until=10m" > /dev/null
+
+  #########################################
+  # 3️⃣ Check actieve container(s)
+  #########################################
+
   RUNNING=$(docker ps --filter "name=$PREFIX" --format "{{.Names}}")
 
-  # Als er geen container is of als 30 minuten voorbij zijn
-  if [ -z "$RUNNING" ] || [ $ELAPSED -ge 1800 ]; then
-    if [ ! -z "$RUNNING" ]; then
+  if [ -z "$RUNNING" ] || [ "$ELAPSED" -ge "$MAX_RUNTIME" ]; then
+
+    if [ -n "$RUNNING" ]; then
       echo "[$(date)] Stoppen actieve container(s) na 30 min: $RUNNING"
-      docker rm -f $RUNNING
+      docker stop $RUNNING > /dev/null
     fi
 
-    # Oude containers opruimen
-    OLD=$(docker ps -a --filter "name=$PREFIX" --format "{{.Names}}")
-    for c in $OLD; do
-      echo "[$(date)] Verwijderen oude container: $c"
-      docker rm -f $c
-    done
-
-    # Nieuwe container starten
-    TIMESTAMP=$(date +%s)
-    NEW_NAME="$PREFIX-$TIMESTAMP"
+    NEW_NAME="$PREFIX-$(date +%s)"
 
     echo "[$(date)] Starten nieuwe container: $NEW_NAME"
 
     docker run -d \
-      --name $NEW_NAME \
+      --name "$NEW_NAME" \
       --cpus="0.7" \
-      -v $VOLUME \
-      $IMAGE
+      -v "$VOLUME" \
+      "$IMAGE" > /dev/null
 
     echo "[$(date)] Container gestart."
     LAST_RESTART=$NOW
