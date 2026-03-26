@@ -46,21 +46,13 @@ chrome_options.add_argument(
 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 chrome_options.add_experimental_option("useAutomationExtension", False)
 
-chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-
 service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
 
-driver = webdriver.Chrome(
-    service=service,
-    options=chrome_options
-)
+driver = webdriver.Chrome(service=service, options=chrome_options)
 
-# webdriver flag verbergen
 driver.execute_script(
     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 )
-
-driver.execute_cdp_cmd("Network.enable", {})
 
 
 # ========================================
@@ -78,6 +70,34 @@ def accept_cookies(driver):
                 return
     except:
         pass
+
+
+# ========================================
+# FETCH VIA BROWSER (CORE)
+# ========================================
+
+def fetch_page(driver, page_no):
+    api_url = (
+        "https://www.bybit.com/x-api/fapi/beehive/public/v1/common/dynamic-leader-list"
+        f"?pageNo={page_no}&pageSize=16&userTag=&dataDuration=DATA_DURATION_SEVEN_DAY"
+        "&leaderTag=&code=&leaderLevel="
+    )
+
+    print(f"Fetching page {page_no} via browser fetch...")
+
+    result = driver.execute_script("""
+        const url = arguments[0];
+
+        return fetch(url, {
+            method: 'GET',
+            credentials: 'include'
+        })
+        .then(r => r.json())
+        .then(data => data)
+        .catch(e => ({error: e.toString()}));
+    """, api_url)
+
+    return result
 
 
 # ========================================
@@ -127,43 +147,29 @@ try:
     time.sleep(3)
 
     # ========================================
-    # NETWORK LOGS CHECKEN
+    # PAGINA'S OPHALEN
     # ========================================
 
-    print("Checking network logs...")
+    all_data = []
 
-    logs = driver.get_log("performance")
+    for page in range(1, 6):
+        data = fetch_page(driver, page)
 
-    for entry in logs:
-        message = json.loads(entry["message"])["message"]
+        if not data or "error" in data:
+            print(f"Error on page {page}: {data}")
+            break
 
-        if message["method"] == "Network.responseReceived":
-            url = message["params"]["response"]["url"]
+        all_data.append(data)
+        time.sleep(1)
 
-            if "dynamic-leader-list" in url:
-                print("Found API call:", url)
+    # Opslaan
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = os.path.join(OUTPUT_DIR, f"leaderboard_{timestamp}.json")
 
-                request_id = message["params"]["requestId"]
+    with open(json_path, "w") as f:
+        json.dump(all_data, f, indent=2)
 
-                try:
-                    response_body = driver.execute_cdp_cmd(
-                        "Network.getResponseBody",
-                        {"requestId": request_id}
-                    )
-
-                    data = json.loads(response_body["body"])
-
-                    json_path = os.path.join(OUTPUT_DIR, "leaderboard.json")
-
-                    with open(json_path, "w") as f:
-                        json.dump(data, f, indent=2)
-
-                    print(f"Saved {json_path}")
-
-                    break
-
-                except Exception as e:
-                    print("Error getting response body:", e)
+    print(f"Saved API data: {json_path}")
 
     # ========================================
     # SCREENSHOT
@@ -175,12 +181,12 @@ try:
     if image.mode in ("RGBA", "P"):
         image = image.convert("RGB")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = os.path.join(OUTPUT_DIR, f"screenshot_{timestamp}.jpg")
+    screenshot_path = os.path.join(OUTPUT_DIR, f"screenshot_{timestamp}.jpg")
 
-    image.save(filename, "JPEG", quality=80, optimize=True)
+    image.save(screenshot_path, "JPEG", quality=80, optimize=True)
 
-    print(f"Saved locally: {filename}")
+    print(f"Saved screenshot: {screenshot_path}")
+
 
 except Exception as e:
     print(f"Error: {e}")
