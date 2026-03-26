@@ -7,12 +7,17 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+
 
 # ========================================
 # CONFIG
 # ========================================
 
-URL = "https://example.com"
+URL = "https://www.bybit.com/copyTrade/"
 OUTPUT_DIR = "screenshots"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -73,13 +78,48 @@ try:
     print(f"Opening {URL}")
     driver.get(URL)
 
+    wait = WebDriverWait(driver, 15)
+
     time.sleep(3)
 
     accept_cookies(driver)
 
     time.sleep(1)
 
-    # Screenshot nemen
+    # ========================================
+    # Klik "All Traders" tab
+    # ========================================
+
+    print("Waiting for 'All Traders' tab...")
+
+    all_traders_tab = wait.until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//div[@role='tab' and contains(., 'All Traders')]")
+        )
+    )
+
+    # Scroll naar element
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center'});",
+        all_traders_tab
+    )
+
+    time.sleep(1)
+
+    # Klik (echte user-like click)
+    try:
+        all_traders_tab.click()
+    except:
+        ActionChains(driver).move_to_element(all_traders_tab).click().perform()
+
+    print("Clicked 'All Traders'")
+
+    time.sleep(3)
+
+    # ========================================
+    # SCREENSHOT
+    # ========================================
+
     png_bytes = driver.get_screenshot_as_png()
     image = Image.open(io.BytesIO(png_bytes))
 
