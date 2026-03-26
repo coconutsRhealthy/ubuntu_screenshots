@@ -1,6 +1,7 @@
 import io
 import os
 import time
+import json
 from datetime import datetime
 from PIL import Image
 from selenium import webdriver
@@ -45,12 +46,21 @@ chrome_options.add_argument(
 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 chrome_options.add_experimental_option("useAutomationExtension", False)
 
-service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
-driver = webdriver.Chrome(service=service, options=chrome_options)
+chrome_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
+service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
+
+driver = webdriver.Chrome(
+    service=service,
+    options=chrome_options
+)
+
+# webdriver flag verbergen
 driver.execute_script(
     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 )
+
+driver.execute_cdp_cmd("Network.enable", {})
 
 
 # ========================================
@@ -115,6 +125,45 @@ try:
     print("Clicked 'All Traders'")
 
     time.sleep(3)
+
+    # ========================================
+    # NETWORK LOGS CHECKEN
+    # ========================================
+
+    print("Checking network logs...")
+
+    logs = driver.get_log("performance")
+
+    for entry in logs:
+        message = json.loads(entry["message"])["message"]
+
+        if message["method"] == "Network.responseReceived":
+            url = message["params"]["response"]["url"]
+
+            if "dynamic-leader-list" in url:
+                print("Found API call:", url)
+
+                request_id = message["params"]["requestId"]
+
+                try:
+                    response_body = driver.execute_cdp_cmd(
+                        "Network.getResponseBody",
+                        {"requestId": request_id}
+                    )
+
+                    data = json.loads(response_body["body"])
+
+                    json_path = os.path.join(OUTPUT_DIR, "leaderboard.json")
+
+                    with open(json_path, "w") as f:
+                        json.dump(data, f, indent=2)
+
+                    print(f"Saved {json_path}")
+
+                    break
+
+                except Exception as e:
+                    print("Error getting response body:", e)
 
     # ========================================
     # SCREENSHOT
