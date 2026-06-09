@@ -7,3 +7,6 @@ venv/
 # IntelliJ IDEA
 *.iml
 .idea/
+
+# macOS
+.DS_Store
