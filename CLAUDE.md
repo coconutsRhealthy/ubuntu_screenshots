@@ -6,9 +6,12 @@ how it relates to the second half of the system. For step-by-step deploy / build
 
 ## What this project does
 
-A webshop **screenshot collector**. It loads a list of ~148 Dutch webshops from a
-JSON file in Cloudflare R2, and once per shop per day takes a headless-Chromium
-screenshot and uploads it as JPEG to the R2 `screenshots` bucket.
+A webshop **screenshot collector**. It loads ~148 Dutch webshops from a shop
+registry JSON in Cloudflare R2 (`webshops_info/shop_registry.external.json` — a
+dict with a `shops` object keyed by name, each `{url, category, resolved_on}`),
+and once per shop per day takes a headless-Chromium screenshot and uploads it as
+JPEG to the R2 `screenshots` bucket. We use only the `url`; `category` is
+available if ever needed.
 
 - `screenshot.py` — `run_cycle()`: one full pass (load list → find which shops are
   due → screenshot each due shop → upload to R2). The actual scraping logic

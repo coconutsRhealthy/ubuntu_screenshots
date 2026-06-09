@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 JSON_URL = os.environ.get(
     "JSON_URL",
-    "https://pub-a3be569620e4415b916e737210363aee.r2.dev/webshops_info/webshop_info_export.json",
+    "https://pub-a3be569620e4415b916e737210363aee.r2.dev/webshops_info/shop_registry.external.json",
 )
 
 R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
@@ -71,13 +71,19 @@ def make_r2_client():
 
 
 def load_urls_from_json(json_url):
+    """Load the shop registry and return {shop_name: url}.
+
+    Expects shop_registry.external.json: a dict with a "shops" object keyed by
+    shop name, each value being {"url": ..., "category": ..., "resolved_on": ...}.
+    """
     response = requests.get(json_url, timeout=10)
     response.raise_for_status()
 
+    shops = response.json().get("shops", {})
+
     urls = {}
-    for item in response.json():
-        name = item.get("name")
-        url = item.get("url")
+    for name, info in shops.items():
+        url = info.get("url") if isinstance(info, dict) else None
         if name and url:
             urls[name] = url
 

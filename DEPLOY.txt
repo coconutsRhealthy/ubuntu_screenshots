@@ -9,7 +9,8 @@ WHAT RUNS
 ---------
 One long-running container. Its main process is collect.py, which every
 POLL_HOURS (default 1h) runs one screenshot cycle and then sleeps. A cycle:
-  1. loads the webshop list from JSON_URL (name -> url),
+  1. loads the shop registry from JSON_URL (shop_registry.external.json: a dict
+     with a "shops" object keyed by name -> {url, category, resolved_on}),
   2. lists the R2 "screenshots" bucket to find each shop's most recent capture,
   3. for every shop NOT captured in the last DEDUPE_HOURS (default 24h):
      launches a FRESH headless Chromium, opens the page, dismisses cookie
@@ -79,7 +80,7 @@ CONFIG (env vars)
   R2_SECRET_ACCESS_KEY   (required)
   R2_BUCKET_NAME=screenshots   target bucket
   R2_PREFIX=                    key prefix in the bucket
-  JSON_URL=...                  webshop list (defaults to the R2 export URL)
+  JSON_URL=...                  shop registry (defaults to shop_registry.external.json in R2)
   POLL_HOURS=1                  cycle cadence in hours
   DEDUPE_HOURS=24               skip a shop captured within this many hours
 
