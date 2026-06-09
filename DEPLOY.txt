@@ -63,8 +63,12 @@ On the droplet, in /root/screenshot-bot:
   docker run --rm --env-file .env screenshot-bot python screenshot.py
 
   # start the collector (this command IS the deployment):
+  #   --cpus="0.7" stops Chromium pinning the single core (the value the old
+  #   watchdog used). Memory is left unbounded on purpose: swap (see below) is
+  #   the safety net; a hard --memory cap risks Chromium being OOM-killed inside
+  #   the container on a heavy page.
   docker run -d --name screenshot-bot --restart unless-stopped \
-      --env-file .env screenshot-bot
+      --cpus="0.7" --env-file .env screenshot-bot
 
 (Replace DROPLET_IP with the droplet's address.)
 
@@ -99,7 +103,19 @@ REDEPLOY AFTER A CODE EDIT (no persistent data to preserve — output lives in R
   docker build -t screenshot-bot .
   docker rm -f screenshot-bot
   docker run -d --name screenshot-bot --restart unless-stopped \
-      --env-file .env screenshot-bot
+      --cpus="0.7" --env-file .env screenshot-bot
+
+HOST: SWAP (the 1 GB / 1 vCPU box)
+----------------------------------
+The droplet has 1 GB RAM and no swap by default — the root cause of the old
+OOM fragility. A 2 GB swapfile was added 2026-06-09 as the memory safety net:
+  fallocate -l 2G /swapfile && chmod 600 /swapfile
+  mkswap /swapfile && swapon /swapfile
+  echo "/swapfile none swap sw 0 0" >> /etc/fstab          # persist across reboot
+  sysctl -w vm.swappiness=10
+  echo "vm.swappiness=10" > /etc/sysctl.d/99-swappiness.conf
+Verify with `swapon --show` and `free -m`. swappiness=10 means the box only
+leans on swap under real RAM pressure, not while RAM is still free.
 
 IF SCREENSHOTS START FAILING
 ----------------------------
