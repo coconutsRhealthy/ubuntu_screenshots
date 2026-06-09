@@ -1,5 +1,8 @@
+# Webshop screenshot collector — long-running container. See DEPLOY.txt.
+# Build:  docker build -t screenshot-bot .
 FROM python:3.11-slim
 
+# Chromium + driver and the shared libs headless Chrome needs.
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -20,12 +23,17 @@ RUN apt-get update && apt-get install -y \
 
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# requirements first so this pip layer is cached and only rebuilds when
+# requirements.txt itself changes, not on every code edit.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY screenshot.py .
+# Runtime code only. collect.py is the long-running scheduler (container main
+# process); it imports run_cycle from screenshot.py.
+COPY screenshot.py collect.py ./
 
-CMD ["python", "-u", "screenshot.py"]
+CMD ["python", "collect.py"]

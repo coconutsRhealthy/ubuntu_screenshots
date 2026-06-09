@@ -1,0 +1,111 @@
+================================================================================
+DROPLET DEPLOYMENT — webshop screenshot collector
+Written 2026-06-09. Mirrors the claude_birdeye_trending / claude_funda Docker
+setup: one long-running container on a DigitalOcean droplet. Replaces the old
+screenshot-watchdog.sh + systemd unit approach.
+================================================================================
+
+WHAT RUNS
+---------
+One long-running container. Its main process is collect.py, which every
+POLL_HOURS (default 1h) runs one screenshot cycle and then sleeps. A cycle:
+  1. loads the webshop list from JSON_URL (name -> url),
+  2. lists the R2 "screenshots" bucket to find each shop's most recent capture,
+  3. for every shop NOT captured in the last DEDUPE_HOURS (default 24h):
+     launches a FRESH headless Chromium, opens the page, dismisses cookie
+     banners, screenshots it, uploads the JPEG to R2, then quits Chromium.
+A failed shop is logged and the cycle continues; a failed cycle is logged and
+the loop continues. Docker's restart policy is the backstop if the process dies.
+
+WHY THIS REPLACES THE WATCHDOG
+------------------------------
+The old screenshot.py was a one-shot; screenshot-watchdog.sh (a systemd service)
+relaunched it ~120x/day and force-killed each container after 30 min because
+Chromium leaks memory on the 1GB box. Here the script IS the scheduler (hourly
+loop) and Chromium is launched+quit PER SHOP, so memory is reclaimed between
+shops instead of being force-killed. The 24h-per-shop dedupe means actual
+screenshot output is unchanged (~1/shop/day) — only the churn is gone.
+
+DOWNSTREAM CONSUMER
+-------------------
+The "image_openai" project (container `eije2`, repo coconutsRhealthy/image_openai)
+reads these screenshots from the same R2 "screenshots" bucket, compares each
+shop's latest vs previous capture, and uses OpenAI to detect new promotions.
+This collector is the producer; eije2 is the consumer. Don't stop this without
+knowing eije2 then has no fresh images to compare.
+
+THE FILES (on the droplet, in /root/screenshot-bot)
+---------------------------------------------------
+  Dockerfile          - builds the image (python:3.11-slim + chromium + driver)
+  requirements.txt    - selenium, Pillow, boto3, requests
+  screenshot.py       - run_cycle(): one full pass (the work)
+  collect.py          - the hourly scheduler loop (container main process)
+  .env                - secrets, NOT in git (see CONFIG below)
+
+DEPLOY COMMANDS
+---------------
+On the Mac, from the project dir, copy the files up:
+  ssh root@DROPLET_IP 'mkdir -p ~/screenshot-bot'
+  scp Dockerfile requirements.txt screenshot.py collect.py \
+      root@DROPLET_IP:~/screenshot-bot/
+
+Create /root/screenshot-bot/.env on the droplet (once; keep it off git):
+  R2_ACCOUNT_ID=...
+  R2_ACCESS_KEY_ID=...
+  R2_SECRET_ACCESS_KEY=...
+  # optional overrides: R2_BUCKET_NAME, R2_PREFIX, JSON_URL, POLL_HOURS, DEDUPE_HOURS
+
+On the droplet, in /root/screenshot-bot:
+  docker build -t screenshot-bot .
+
+  # smoke test — one cycle, then it would loop; Ctrl+C after you see uploads.
+  # (or override DEDUPE_HOURS=0 to force a re-capture of one shop)
+  docker run --rm --env-file .env screenshot-bot python screenshot.py
+
+  # start the collector (this command IS the deployment):
+  docker run -d --name screenshot-bot --restart unless-stopped \
+      --env-file .env screenshot-bot
+
+(Replace DROPLET_IP with the droplet's address.)
+
+CONFIG (env vars)
+-----------------
+  R2_ACCOUNT_ID          (required) Cloudflare R2 account id
+  R2_ACCESS_KEY_ID       (required)
+  R2_SECRET_ACCESS_KEY   (required)
+  R2_BUCKET_NAME=screenshots   target bucket
+  R2_PREFIX=                    key prefix in the bucket
+  JSON_URL=...                  webshop list (defaults to the R2 export URL)
+  POLL_HOURS=1                  cycle cadence in hours
+  DEDUPE_HOURS=24               skip a shop captured within this many hours
+
+MONITORING
+----------
+  docker ps                              - screenshot-bot should show "Up"
+  docker logs --tail 30 screenshot-bot   - recent activity
+  docker logs -f screenshot-bot          - live tail
+Each cycle logs: "ok  cycle done  shot:N skipped:M failed:K".
+
+OPERATIONS
+----------
+  docker stop screenshot-bot    - pause collection
+  docker start screenshot-bot   - resume
+  free -m                       - check droplet memory headroom
+
+REDEPLOY AFTER A CODE EDIT (no persistent data to preserve — output lives in R2)
+--------------------------------------------------------------------------------
+  # re-scp the changed file(s) from the Mac, then on the droplet:
+  cd ~/screenshot-bot
+  docker build -t screenshot-bot .
+  docker rm -f screenshot-bot
+  docker run -d --name screenshot-bot --restart unless-stopped \
+      --env-file .env screenshot-bot
+
+IF SCREENSHOTS START FAILING
+----------------------------
+Logs show "Error on <shop>: ...". A single shop failing (slow page, layout
+change, cookie wall) is logged and skipped; the next cycle retries it. If EVERY
+shop fails, check: R2 credentials (.env), JSON_URL reachability, and that
+chromium/chromedriver still launch (docker logs will show a webdriver error).
+The loop keeps running through failures; one missed cycle is not a problem.
+================================================================================

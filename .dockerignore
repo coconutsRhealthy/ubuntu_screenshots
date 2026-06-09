@@ -1,0 +1,10 @@
+.git
+.gitignore
+.idea
+*.iml
+.venv
+__pycache__
+.DS_Store
+.env
+DEPLOY.txt
+README.md

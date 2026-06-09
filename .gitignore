@@ -10,3 +10,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# secrets
+.env
