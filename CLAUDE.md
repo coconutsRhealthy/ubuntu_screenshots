@@ -72,8 +72,17 @@ current setup addresses them directly:
 - **CPU** — the dominant old cost was *container churn* (see history below), now
   gone. Relaunch the container with `--cpus="0.7"` so Chromium can't pin the one
   core (this matches the value the old watchdog used).
+- **Zombie reaping** — the container MUST run with `--init` (tini as PID 1).
+  Chrome leaves ~11 orphaned subprocesses per launch; without an init to reap
+  them they pile up as zombies and hit the container task limit in ~9h, after
+  which all Chrome launches fail ("Chrome instance exited"). See DEPLOY.txt
+  INCIDENT 2026-06-10.
 - **Crashes / reboots** — `docker run --restart unless-stopped` is the entire
   supervision strategy. No watchdog, no systemd unit.
+
+The canonical run command (all flags matter):
+  docker run -d --name screenshot-bot --restart unless-stopped \
+      --init --cpus="0.7" --env-file .env screenshot-bot
 
 ## History — what changed and why (2026-06-09)
 
@@ -98,12 +107,13 @@ R2 credentials live in `/root/screenshot-bot/.env` on the droplet (mode 600), NO
 in git (`.env` is gitignored). The R2 account is shared with eije2. eije2
 additionally holds an OpenAI key and a Telegram bot token in its own container env.
 
-## Current state (2026-06-09)
+## Current state (2026-06-10)
 
-- New code built and deployed to the droplet; all paths verified (Chromium, R2,
-  a real end-to-end screenshot+upload of one shop).
-- **`screenshot-bot` is currently STOPPED (parked)** at the operator's request —
-  do NOT relaunch without an explicit OK. To start it, see DEPLOY.txt
-  ("DEPLOY COMMANDS"); use the `--cpus="0.7"` form.
+- **`screenshot-bot` is LIVE** on the new shop registry, running with
+  `--init --cpus="0.7" --restart unless-stopped`.
+- Ran 2026-06-09 ~09:45 → 18:49 fine, then hit the zombie PID exhaustion bug
+  (see DEPLOY.txt INCIDENT 2026-06-10): shot:0 for ~8h until recreated WITH
+  `--init` on 2026-06-10 ~03:36. Verified after fix: zombies stay ~0,
+  screenshots succeed again.
 - `eije2` is running untouched.
-- Swap added; watchdog fully removed.
+- Swap (2 GB) added; watchdog fully removed.

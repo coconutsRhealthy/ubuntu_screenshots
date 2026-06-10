@@ -64,12 +64,17 @@ On the droplet, in /root/screenshot-bot:
   docker run --rm --env-file .env screenshot-bot python screenshot.py
 
   # start the collector (this command IS the deployment):
+  #   --init is REQUIRED: it runs tini as PID 1 to reap Chrome's zombie
+  #   subprocesses. Without it, each Chrome launch leaves ~11 unreaped zombies
+  #   (python as PID 1 does not reap); they hit the container task limit (~1024)
+  #   in ~9h and ALL Chrome launches then fail with "Chrome instance exited".
+  #   (Learned the hard way 2026-06-10 — see INCIDENT note at bottom.)
   #   --cpus="0.7" stops Chromium pinning the single core (the value the old
   #   watchdog used). Memory is left unbounded on purpose: swap (see below) is
   #   the safety net; a hard --memory cap risks Chromium being OOM-killed inside
   #   the container on a heavy page.
   docker run -d --name screenshot-bot --restart unless-stopped \
-      --cpus="0.7" --env-file .env screenshot-bot
+      --init --cpus="0.7" --env-file .env screenshot-bot
 
 (Replace DROPLET_IP with the droplet's address.)
 
@@ -104,7 +109,7 @@ REDEPLOY AFTER A CODE EDIT (no persistent data to preserve — output lives in R
   docker build -t screenshot-bot .
   docker rm -f screenshot-bot
   docker run -d --name screenshot-bot --restart unless-stopped \
-      --cpus="0.7" --env-file .env screenshot-bot
+      --init --cpus="0.7" --env-file .env screenshot-bot
 
 HOST: SWAP (the 1 GB / 1 vCPU box)
 ----------------------------------
@@ -125,4 +130,19 @@ change, cookie wall) is logged and skipped; the next cycle retries it. If EVERY
 shop fails, check: R2 credentials (.env), JSON_URL reachability, and that
 chromium/chromedriver still launch (docker logs will show a webdriver error).
 The loop keeps running through failures; one missed cycle is not a problem.
+
+INCIDENT 2026-06-10 — zombie PID exhaustion ("Chrome instance exited")
+---------------------------------------------------------------------
+Symptom: after ~9h of healthy cycles the bot logged shot:0 with every shop
+failing "session not created: Chrome instance exited", while the container
+stayed "Up" (0 restarts). NOT memory/OOM — the container used only ~138 MB.
+Cause: the container was started WITHOUT --init, so python was PID 1 and did
+not reap Chrome's orphaned subprocesses. Each screenshot left ~11 zombies
+(chromium + chrome_crashpad); after ~98 screenshots the container held ~1100
+zombie tasks and hit the per-container task ceiling, so fork() for any new
+Chrome failed.
+Fix: recreate WITH --init (tini as PID 1 reaps zombies). Verify after the fix:
+  docker exec screenshot-bot ps -p 1 -o comm=        # -> docker-init (not python)
+  docker exec screenshot-bot ps -e -o stat= | grep -c Z   # -> stays ~0, not climbing
+Lesson: any container that launches Chrome per-iteration MUST run with --init.
 ================================================================================
