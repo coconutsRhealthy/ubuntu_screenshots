@@ -96,10 +96,16 @@ CONFIG (env vars)
                                 blocklist (currently {meetmethere}, a chronic hanger)
   BLOCKLIST_RETRY_HOURS=24      blocklisted shops are not skipped forever — each gets one
                                 real "probation" attempt this often (the 90s cap makes it
-                                safe). A probe that succeeds lands in R2 normally, so a
-                                fixed shop recovers on its own; a still-broken shop times
-                                out, uploads nothing, and waits another interval. The last
-                                attempt time is persisted in R2 under _probation/<shop>.txt
+                                safe). A probe that yields a real screenshot (>=MIN_RECOVERY_
+                                BYTES) auto-delists the shop (status->recovered) and it's
+                                treated normally again; a still-broken shop times out and
+                                waits another interval.
+  MIN_RECOVERY_BYTES=40000      min JPEG size for a probe to count as "recovered" — guards
+                                against delisting a shop that loads blank pages (matches
+                                eije2's own <40KB skip). All blocklist/probation/history
+                                state is ONE JSON object in R2: blocklist_state.json (keyed
+                                by shop -> first_blocklisted, last_probe, status,
+                                recovered_on). Edit that file to override (see screenshot.py).
 
 MONITORING
 ----------
@@ -176,9 +182,11 @@ SHOP_TIMEOUT_SECONDS=90 that force-kills the whole chromedriver->chromium tree
 via psutil.kill_proc_tree(); (2) set_page_load_timeout(45) so a stuck GET aborts;
 (3) SKIP_SHOPS blocklist (meetmethere) — also produces blank <40KB screenshots,
 bad input for eije2. NOT permanent: each blocklisted shop gets one real
-"probation" attempt every BLOCKLIST_RETRY_HOURS (default 24h; last-attempt time
-persisted in R2 under _probation/<shop>.txt, written before the attempt so a hang
-can't cause hourly re-tries), so a shop that gets fixed recovers on its own.
+"probation" attempt every BLOCKLIST_RETRY_HOURS (default 24h), and a probe that
+yields a real (>=MIN_RECOVERY_BYTES) screenshot auto-delists it. All state lives
+in ONE R2 object, blocklist_state.json (per shop: first_blocklisted, last_probe,
+status active|recovered, recovered_on). The last_probe stamp is written before
+the attempt so a hang can't cause hourly re-tries.
 Verify after the fix:
   docker logs screenshot-bot | grep -i meetmethere   # -> "Skipping ... blocklist"
   docker stats --no-stream screenshot-bot            # CPU not pinned for hours

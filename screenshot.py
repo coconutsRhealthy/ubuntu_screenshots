@@ -10,6 +10,7 @@ droplet. That per-shop teardown is what replaces the old watchdog's 30-min kill.
 """
 
 import io
+import json
 import logging
 import os
 import signal
@@ -72,14 +73,32 @@ SKIP_SHOPS = DEFAULT_SKIP_SHOPS | {
     s.strip() for s in os.environ.get("SKIP_SHOPS", "").split(",") if s.strip()
 }
 
-# How often a blocklisted shop gets a real attempt again. The 90s wall-clock cap
-# makes such a probe safe (a still-broken shop just times out, uploads nothing,
-# and waits another interval). We persist the last *attempt* time in R2 (see
-# read/write_probation_times) — written BEFORE the attempt, so even a hang can't
-# cause hourly re-tries. A probe that succeeds lands in R2 like any screenshot.
+# How often a blocklisted shop gets a real "probation" attempt again. The 90s
+# wall-clock cap makes such a probe safe (a still-broken shop just times out and
+# waits another interval). Per-shop state is persisted in R2 (see the marker
+# helpers below) — the attempt time is written BEFORE the probe, so even a hang
+# can't cause hourly re-tries.
 BLOCKLIST_RETRY_HOURS = int(os.environ.get("BLOCKLIST_RETRY_HOURS", "24"))
-# Marker objects live under this prefix inside the screenshots bucket.
-PROBATION_PREFIX = "_probation/"
+
+# Auto-recovery: a probe "recovers" a blocklisted shop only if it yields a real
+# screenshot at least this big. meet-me-there.com loads blank/tiny pages even
+# when it doesn't hang, so a mere "didn't crash" must NOT count as recovered or
+# we'd delist a shop that's still producing garbage. 40 KB matches eije2's own
+# minimum-size filter on the consumer side.
+MIN_RECOVERY_BYTES = int(os.environ.get("MIN_RECOVERY_BYTES", "40000"))
+
+# All blocklist state lives in ONE JSON object in the screenshots bucket, keyed
+# by safe_key:
+#   {"meetmethere": {"first_blocklisted": iso, "last_probe": iso,
+#                    "status": "active"|"recovered", "recovered_on": iso?}}
+# "active"   = currently blocklisted; probed every BLOCKLIST_RETRY_HOURS.
+# "recovered"= a probe produced a real screenshot; treated as a normal shop again
+#              (kept in the file as the history of what came off, and when).
+# Manual overrides (just edit this one file in the R2 dashboard):
+#   force an immediate re-probe   -> delete the shop's "last_probe"
+#   re-blocklist a recovered shop -> set its "status" back to "active" (or delete
+#                                    its entry); keep it in SKIP_SHOPS.
+BLOCKLIST_STATE_KEY = "blocklist_state.json"
 
 
 # ========================================
@@ -195,8 +214,6 @@ def build_latest_screenshot_map(r2_client, bucket_name, prefix):
 
         for obj in response["Contents"]:
             filename = obj["Key"].replace(prefix, "")
-            if filename.startswith(PROBATION_PREFIX):
-                continue  # blocklist probation markers, not screenshots
             try:
                 # Filename is "{safe_key}_{YYYYmmdd}_{HHMMSS}.jpg". Parse from the
                 # END so shop names that themselves contain "_" (e.g. fejo_studio,
@@ -230,43 +247,49 @@ def screenshot_recently_uploaded_from_map(latest_map, safe_key, hours):
     return False
 
 
-# ----- blocklist probation state (persisted in R2) -----
+# ----- blocklist state (one JSON object in R2) -----
 
-def read_probation_times(r2_client, bucket_name, prefix, safe_keys):
-    """Return {safe_key: datetime_of_last_probe} for the given blocklisted shops.
-
-    Each marker is a tiny object holding an ISO timestamp. A shop with no marker
-    is absent from the dict, which blocklisted_shop_due() reads as 'never probed
-    => due now'. Read failures (incl. missing object) are treated the same way."""
-    times = {}
-    for safe_key in safe_keys:
-        key = f"{prefix}{PROBATION_PREFIX}{safe_key}.txt"
-        try:
-            body = r2_client.get_object(Bucket=bucket_name, Key=key)["Body"].read()
-            times[safe_key] = datetime.fromisoformat(body.decode().strip())
-        except Exception:
-            continue
-    return times
+def _parse_dt(value):
+    """Parse an ISO timestamp; return None on anything unexpected."""
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 
-def write_probation_time(r2_client, bucket_name, prefix, safe_key, dt):
-    """Record dt as the last probe time for a blocklisted shop. Written BEFORE the
-    attempt so a hang/timeout still advances the clock (no hourly re-tries)."""
+def load_blocklist_state(r2_client, bucket_name, prefix):
+    """Load blocklist_state.json -> {safe_key: {...}}. Missing or unreadable file
+    (first ever run) yields an empty dict, which means 'nothing probed yet'."""
+    try:
+        body = r2_client.get_object(
+            Bucket=bucket_name, Key=f"{prefix}{BLOCKLIST_STATE_KEY}"
+        )["Body"].read()
+        data = json.loads(body.decode())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_blocklist_state(r2_client, bucket_name, prefix, state):
+    """Persist the whole blocklist state. Called right after each mutation (a probe
+    stamp or a recovery), which are rare — at most one per blocklisted shop per
+    cycle — so rewriting the small file each time is cheap."""
     try:
         r2_client.put_object(
             Bucket=bucket_name,
-            Key=f"{prefix}{PROBATION_PREFIX}{safe_key}.txt",
-            Body=dt.isoformat().encode(),
-            ContentType="text/plain",
+            Key=f"{prefix}{BLOCKLIST_STATE_KEY}",
+            Body=json.dumps(state, indent=2, sort_keys=True).encode(),
+            ContentType="application/json",
         )
     except Exception as e:
-        logger.error(f"Could not write probation marker for {safe_key}: {e}")
+        logger.error(f"Could not save blocklist state: {e}")
 
 
-def blocklisted_shop_due(probation_times, safe_key, hours):
-    """True if a blocklisted shop is due for a probation retry (never probed, or
-    last probe was at least `hours` ago)."""
-    last = probation_times.get(safe_key)
+def blocklisted_shop_due(record, hours):
+    """True if a blocklisted shop is due for a probation retry: never probed, or
+    its last probe was at least `hours` ago. `record` is the shop's state entry
+    (or None if it has none yet)."""
+    last = _parse_dt(record.get("last_probe")) if record else None
     if last is None:
         return True
     return (datetime.now(timezone.utc) - last) >= timedelta(hours=hours)
@@ -394,7 +417,8 @@ def wait_for_full_load(driver, timeout=15):
 # ========================================
 
 def screenshot_one(driver, r2, key, url):
-    """Open one shop, dismiss cookies, screenshot, upload JPEG to R2."""
+    """Open one shop, dismiss cookies, screenshot, upload JPEG to R2. Returns the
+    uploaded JPEG's size in bytes (used to decide blocklist auto-recovery)."""
     driver.get(url)
     wait_for_full_load(driver)
     time.sleep(2)
@@ -415,6 +439,7 @@ def screenshot_one(driver, r2, key, url):
 
     buffer = io.BytesIO()
     image.save(buffer, "JPEG", quality=75, optimize=True)
+    size_bytes = buffer.tell()
     buffer.seek(0)
 
     r2.put_object(
@@ -424,6 +449,7 @@ def screenshot_one(driver, r2, key, url):
         ContentType="image/jpeg",
     )
     logger.info(f"Uploaded to R2: {R2_BUCKET_NAME}/{R2_PREFIX}{screenshot_filename}")
+    return size_bytes
 
 
 # ========================================
@@ -436,11 +462,8 @@ def run_cycle():
     r2 = make_r2_client()
     latest = build_latest_screenshot_map(r2, R2_BUCKET_NAME, R2_PREFIX)
 
-    # When was each blocklisted shop last given a probation retry?
-    probation = read_probation_times(
-        r2, R2_BUCKET_NAME, R2_PREFIX,
-        {k.replace(" ", "_") for k in SKIP_SHOPS},
-    )
+    # All blocklist/probation/history state, keyed by safe_key (see schema above).
+    state = load_blocklist_state(r2, R2_BUCKET_NAME, R2_PREFIX)
 
     shot = skipped = failed = 0
 
@@ -449,39 +472,52 @@ def run_cycle():
 
     for key, url in urls.items():
         safe_key = key.replace(" ", "_")
+        record = state.get(safe_key)
 
-        if key in SKIP_SHOPS or safe_key in SKIP_SHOPS:
-            # Blocklisted: skip, EXCEPT for a periodic probation retry (the 90s
-            # cap makes a probe safe; a still-broken shop just times out).
-            if not blocklisted_shop_due(probation, safe_key, BLOCKLIST_RETRY_HOURS):
+        # Effective blocklist = configured SKIP_SHOPS minus shops already recovered.
+        recovered = bool(record) and record.get("status") == "recovered"
+        blocklisted = (key in SKIP_SHOPS or safe_key in SKIP_SHOPS) and not recovered
+
+        is_probe = False
+        if blocklisted:
+            # Skip, EXCEPT for a periodic probation retry (the 90s cap makes a
+            # probe safe; a still-broken shop just times out). Probes bypass the
+            # normal dedupe — the whole point is to re-test on a fixed cadence.
+            if not blocklisted_shop_due(record, BLOCKLIST_RETRY_HOURS):
                 logger.info(
                     f"Skipping {key} — blocklisted (probation retry every "
                     f"{BLOCKLIST_RETRY_HOURS}h)"
                 )
                 skipped += 1
                 continue
+            is_probe = True
+            now = datetime.now(timezone.utc)
+            first = (record or {}).get("first_blocklisted") or now.isoformat()
             logger.info(
                 f"Probation retry for blocklisted {key} — last probe was "
                 f">={BLOCKLIST_RETRY_HOURS}h ago"
             )
-            # Stamp the attempt BEFORE trying, so a hang can't cause hourly re-tries.
-            write_probation_time(
-                r2, R2_BUCKET_NAME, R2_PREFIX, safe_key,
-                datetime.now(timezone.utc),
-            )
-
-        if screenshot_recently_uploaded_from_map(latest, safe_key, DEDUPE_HOURS):
+            # Stamp the attempt BEFORE trying (persist now), so a hang can't cause
+            # hourly re-tries.
+            state[safe_key] = {
+                "first_blocklisted": first,
+                "last_probe": now.isoformat(),
+                "status": "active",
+            }
+            save_blocklist_state(r2, R2_BUCKET_NAME, R2_PREFIX, state)
+        elif screenshot_recently_uploaded_from_map(latest, safe_key, DEDUPE_HOURS):
             skipped += 1
             continue
 
         logger.info(f"Opening {key} -> {url}")
         driver = None
         chromedriver_pid = None
+        size_bytes = 0
         try:
             signal.alarm(SHOP_TIMEOUT_SECONDS)
             driver = make_chrome_driver()
             chromedriver_pid = driver.service.process.pid
-            screenshot_one(driver, r2, key, url)
+            size_bytes = screenshot_one(driver, r2, key, url)
             shot += 1
         except ShopTimeout:
             failed += 1
@@ -494,6 +530,15 @@ def run_cycle():
         finally:
             signal.alarm(0)  # cancel the per-shop alarm before teardown
             cleanup_driver(driver, chromedriver_pid)
+
+        # A blocklisted shop "recovers" only on a real (non-blank) screenshot.
+        if is_probe and size_bytes >= MIN_RECOVERY_BYTES:
+            logger.info(
+                f"{key} recovered ({size_bytes} bytes) — delisting from blocklist"
+            )
+            state[safe_key]["status"] = "recovered"
+            state[safe_key]["recovered_on"] = datetime.now(timezone.utc).isoformat()
+            save_blocklist_state(r2, R2_BUCKET_NAME, R2_PREFIX, state)
 
     return shot, skipped, failed
 

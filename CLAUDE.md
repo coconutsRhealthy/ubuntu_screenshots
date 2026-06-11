@@ -84,8 +84,10 @@ current setup addresses them directly:
   with `psutil` on timeout/exception (driver.quit alone doesn't reap a wedged
   tree). Chronic offenders are in a built-in `SKIP_SHOPS` blocklist — not
   permanent: each gets one real "probation" attempt every `BLOCKLIST_RETRY_HOURS`
-  (24h; last-attempt time persisted in R2 under `_probation/<shop>.txt`), so a
-  fixed shop recovers on its own. See DEPLOY.txt INCIDENT 2026-06-11.
+  (24h), and a probe that yields a real (>=`MIN_RECOVERY_BYTES`) screenshot
+  auto-delists the shop. All blocklist/probation/history state is ONE R2 object,
+  `blocklist_state.json` (per shop: first_blocklisted, last_probe, status,
+  recovered_on). See DEPLOY.txt INCIDENT 2026-06-11.
 - **Crashes / reboots** — `docker run --restart unless-stopped` is the entire
   supervision strategy. No watchdog, no systemd unit.
 
@@ -125,7 +127,8 @@ additionally holds an OpenAI key and a Telegram bot token in its own container e
   ~01:07: restarted, then redeployed screenshot.py with a 90s per-shop
   wall-clock cap + force-kill of the Chromium tree (psutil), a 45s page-load
   timeout, and a self-recovering `SKIP_SHOPS` blocklist (meetmethere; one
-  probation retry every `BLOCKLIST_RETRY_HOURS`=24h, state in R2 `_probation/`).
+  probation retry every `BLOCKLIST_RETRY_HOURS`=24h, auto-delists on a real
+  screenshot). All blocklist state is ONE R2 object, `blocklist_state.json`.
   Verified live: meetmethere is probed once then skipped for 24h (its probe
   timed out at 45s and the cycle continued), slow sites still complete under the
   cap, chromium procs/zombies stay flat. `psutil` added to requirements.txt.
