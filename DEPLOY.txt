@@ -88,6 +88,18 @@ CONFIG (env vars)
   JSON_URL=...                  shop registry (defaults to shop_registry.external.json in R2)
   POLL_HOURS=1                  cycle cadence in hours
   DEDUPE_HOURS=24               skip a shop captured within this many hours
+  SHOP_TIMEOUT_SECONDS=90       hard wall-clock cap per shop; over this the whole
+                                Chromium process tree is force-killed (see INCIDENT 2026-06-11)
+  PAGE_LOAD_TIMEOUT_SECONDS=45  abort a single page load (Selenium default ~300s)
+  CLEANUP_TIMEOUT_SECONDS=15    cap on graceful driver.quit() before force-kill
+  SKIP_SHOPS=                   comma-separated shop keys to skip; ADDED to the built-in
+                                blocklist (currently {meetmethere}, a chronic hanger)
+  BLOCKLIST_RETRY_HOURS=24      blocklisted shops are not skipped forever — each gets one
+                                real "probation" attempt this often (the 90s cap makes it
+                                safe). A probe that succeeds lands in R2 normally, so a
+                                fixed shop recovers on its own; a still-broken shop times
+                                out, uploads nothing, and waits another interval. The last
+                                attempt time is persisted in R2 under _probation/<shop>.txt
 
 MONITORING
 ----------
@@ -145,4 +157,32 @@ Fix: recreate WITH --init (tini as PID 1 reaps zombies). Verify after the fix:
   docker exec screenshot-bot ps -p 1 -o comm=        # -> docker-init (not python)
   docker exec screenshot-bot ps -e -o stat= | grep -c Z   # -> stays ~0, not climbing
 Lesson: any container that launches Chrome per-iteration MUST run with --init.
+
+INCIDENT 2026-06-11 — single-shop hang pegging CPU for ~9h (no wall-clock cap)
+-----------------------------------------------------------------------------
+Symptom: DO dashboard showed sustained ~70% CPU for ~10h. screenshot-bot stuck —
+last log "Opening meetmethere -> https://meet-me-there.com/?country=NL" at
+2026-06-10 15:39, no progress for ~9h13m. One chromium pid had burned ~6h of CPU
+at 63% busy-looping; container at 81% CPU / 133 PIDs. Zombies were 0 (so NOT the
+--init bug above) — this was a single LIVE chromium spinning. (Flagged by the
+eije2/image_openai Claude instance on the same droplet.)
+Cause: meet-me-there.com finishes loading, then spins Chromium in a busy-loop.
+run_cycle() had NO hard wall-clock cap on a shop — Selenium's renderer/page-load
+timeout doesn't cover this post-load phase — so screenshot_one() blocked forever
+and the cycle never advanced. driver.quit() also didn't reap the wedged tree.
+Immediate fix: docker restart screenshot-bot (safe; dedups off R2, no data loss).
+Durable fix (screenshot.py): (1) SIGALRM per-shop wall-clock cap
+SHOP_TIMEOUT_SECONDS=90 that force-kills the whole chromedriver->chromium tree
+via psutil.kill_proc_tree(); (2) set_page_load_timeout(45) so a stuck GET aborts;
+(3) SKIP_SHOPS blocklist (meetmethere) — also produces blank <40KB screenshots,
+bad input for eije2. NOT permanent: each blocklisted shop gets one real
+"probation" attempt every BLOCKLIST_RETRY_HOURS (default 24h; last-attempt time
+persisted in R2 under _probation/<shop>.txt, written before the attempt so a hang
+can't cause hourly re-tries), so a shop that gets fixed recovers on its own.
+Verify after the fix:
+  docker logs screenshot-bot | grep -i meetmethere   # -> "Skipping ... blocklist"
+  docker stats --no-stream screenshot-bot            # CPU not pinned for hours
+  docker exec screenshot-bot ps -e -o comm= | grep -c chromium  # not climbing
+Lesson: any per-iteration Chrome launch needs a wall-clock cap that force-kills
+the process tree — a renderer/page-load timeout alone does NOT bound CPU.
 ================================================================================

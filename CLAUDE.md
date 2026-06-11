@@ -77,6 +77,15 @@ current setup addresses them directly:
   them they pile up as zombies and hit the container task limit in ~9h, after
   which all Chrome launches fail ("Chrome instance exited"). See DEPLOY.txt
   INCIDENT 2026-06-10.
+- **Per-shop hang** — a single shop (e.g. meet-me-there.com) can finish loading
+  then spin Chromium in a CPU busy-loop that no Selenium timeout covers, freezing
+  the whole cycle for hours. `run_cycle` enforces a hard `SHOP_TIMEOUT_SECONDS`
+  (90s) wall-clock cap via SIGALRM and force-kills the chromedriver→chromium tree
+  with `psutil` on timeout/exception (driver.quit alone doesn't reap a wedged
+  tree). Chronic offenders are in a built-in `SKIP_SHOPS` blocklist — not
+  permanent: each gets one real "probation" attempt every `BLOCKLIST_RETRY_HOURS`
+  (24h; last-attempt time persisted in R2 under `_probation/<shop>.txt`), so a
+  fixed shop recovers on its own. See DEPLOY.txt INCIDENT 2026-06-11.
 - **Crashes / reboots** — `docker run --restart unless-stopped` is the entire
   supervision strategy. No watchdog, no systemd unit.
 
@@ -107,13 +116,20 @@ R2 credentials live in `/root/screenshot-bot/.env` on the droplet (mode 600), NO
 in git (`.env` is gitignored). The R2 account is shared with eije2. eije2
 additionally holds an OpenAI key and a Telegram bot token in its own container env.
 
-## Current state (2026-06-10)
+## Current state (2026-06-11)
 
-- **`screenshot-bot` is LIVE** on the new shop registry, running with
-  `--init --cpus="0.7" --restart unless-stopped`.
-- Ran 2026-06-09 ~09:45 → 18:49 fine, then hit the zombie PID exhaustion bug
-  (see DEPLOY.txt INCIDENT 2026-06-10): shot:0 for ~8h until recreated WITH
-  `--init` on 2026-06-10 ~03:36. Verified after fix: zombies stay ~0,
-  screenshots succeed again.
+- **`screenshot-bot` is LIVE** on the new shop registry (~286 shops now), running
+  with `--init --cpus="0.7" --restart unless-stopped`.
+- 2026-06-10 15:39 → 2026-06-11 00:51 it hung on meet-me-there.com pegging the
+  single core for ~9h (see DEPLOY.txt INCIDENT 2026-06-11). Fixed 2026-06-11
+  ~01:07: restarted, then redeployed screenshot.py with a 90s per-shop
+  wall-clock cap + force-kill of the Chromium tree (psutil), a 45s page-load
+  timeout, and a self-recovering `SKIP_SHOPS` blocklist (meetmethere; one
+  probation retry every `BLOCKLIST_RETRY_HOURS`=24h, state in R2 `_probation/`).
+  Verified live: meetmethere is probed once then skipped for 24h (its probe
+  timed out at 45s and the cycle continued), slow sites still complete under the
+  cap, chromium procs/zombies stay flat. `psutil` added to requirements.txt.
+- Earlier (2026-06-10): zombie PID exhaustion bug, fixed by adding `--init`
+  (DEPLOY.txt INCIDENT 2026-06-10).
 - `eije2` is running untouched.
 - Swap (2 GB) added; watchdog fully removed.

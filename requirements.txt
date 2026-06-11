@@ -2,3 +2,4 @@ selenium==4.16.0
 Pillow==12.1.1
 boto3==1.42.49
 requests
+psutil==6.1.1

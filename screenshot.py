@@ -12,10 +12,12 @@ droplet. That per-shop teardown is what replaces the old watchdog's 30-min kill.
 import io
 import logging
 import os
+import signal
 import time
 from datetime import datetime, timezone, timedelta
 
 import boto3
+import psutil
 import requests
 from PIL import Image
 from selenium import webdriver
@@ -44,6 +46,91 @@ R2_PREFIX = os.environ.get("R2_PREFIX", "")
 
 # A shop is skipped if it already has a screenshot newer than this many hours.
 DEDUPE_HOURS = int(os.environ.get("DEDUPE_HOURS", "24"))
+
+# Hard wall-clock cap on a single shop (open -> screenshot -> upload). This is
+# the backstop the old code lacked: some pages (e.g. meet-me-there.com) finish
+# loading but then spin Chromium in a CPU busy-loop that no Selenium timeout
+# covers, freezing the whole cycle indefinitely. When this fires we force-kill
+# the Chromium process tree and move on. See DEPLOY.txt INCIDENT 2026-06-11.
+SHOP_TIMEOUT_SECONDS = int(os.environ.get("SHOP_TIMEOUT_SECONDS", "90"))
+
+# Abort a single page load after this long (Selenium default is ~300s, far too
+# long on a 1-core box with ~280 shops). Independent of the wall-clock cap above.
+PAGE_LOAD_TIMEOUT_SECONDS = int(os.environ.get("PAGE_LOAD_TIMEOUT_SECONDS", "45"))
+
+# Hard cap on the graceful driver.quit() during cleanup, so a wedged Chromium
+# can't hang teardown; the force-kill below is the backstop if quit() times out.
+CLEANUP_TIMEOUT_SECONDS = int(os.environ.get("CLEANUP_TIMEOUT_SECONDS", "15"))
+
+# Chronic offenders. meet-me-there.com hangs Chromium and produces tiny/blank
+# screenshots even when it doesn't hang — bad input for the downstream promo
+# detector. These are NOT skipped forever: they get a "probation" retry every
+# BLOCKLIST_RETRY_HOURS (see below), so a shop that gets fixed recovers on its
+# own. SKIP_SHOPS (comma-separated keys) adds to this set.
+DEFAULT_SKIP_SHOPS = {"meetmethere"}
+SKIP_SHOPS = DEFAULT_SKIP_SHOPS | {
+    s.strip() for s in os.environ.get("SKIP_SHOPS", "").split(",") if s.strip()
+}
+
+# How often a blocklisted shop gets a real attempt again. The 90s wall-clock cap
+# makes such a probe safe (a still-broken shop just times out, uploads nothing,
+# and waits another interval). We persist the last *attempt* time in R2 (see
+# read/write_probation_times) — written BEFORE the attempt, so even a hang can't
+# cause hourly re-tries. A probe that succeeds lands in R2 like any screenshot.
+BLOCKLIST_RETRY_HOURS = int(os.environ.get("BLOCKLIST_RETRY_HOURS", "24"))
+# Marker objects live under this prefix inside the screenshots bucket.
+PROBATION_PREFIX = "_probation/"
+
+
+# ========================================
+# PER-SHOP WALL-CLOCK TIMEOUT + PROCESS REAPING
+# ========================================
+
+class ShopTimeout(Exception):
+    """Raised by the SIGALRM handler when a shop exceeds its wall-clock budget."""
+
+
+def _alarm_handler(signum, frame):
+    raise ShopTimeout()
+
+
+def kill_proc_tree(pid):
+    """Force-kill a process and all its descendants, then reap them.
+
+    Selenium's driver.quit() does not reliably tear down a misbehaving Chromium:
+    the browser tree (chromedriver -> chromium -> renderers) can survive and keep
+    burning CPU. The whole tree descends from the chromedriver pid, so killing
+    that subtree recursively reaps every leaked chromium process."""
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    procs = parent.children(recursive=True)
+    procs.append(parent)
+    for p in procs:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
+        except Exception:
+            pass
+    # Reap them so they don't linger as zombies (tini also reaps, belt-and-braces).
+    psutil.wait_procs(procs, timeout=5)
+
+
+def cleanup_driver(driver, chromedriver_pid):
+    """Tear down a driver: try a graceful, time-capped quit(), then force-kill the
+    whole Chromium process tree as the backstop. Safe to call on any state."""
+    if driver is not None:
+        try:
+            signal.alarm(CLEANUP_TIMEOUT_SECONDS)
+            driver.quit()
+        except Exception:
+            pass
+        finally:
+            signal.alarm(0)
+    if chromedriver_pid is not None:
+        kill_proc_tree(chromedriver_pid)
 
 
 # ========================================
@@ -108,12 +195,18 @@ def build_latest_screenshot_map(r2_client, bucket_name, prefix):
 
         for obj in response["Contents"]:
             filename = obj["Key"].replace(prefix, "")
+            if filename.startswith(PROBATION_PREFIX):
+                continue  # blocklist probation markers, not screenshots
             try:
-                shop = filename.split("_")[0]
-                timestamp_str = filename.split("_", 1)[1].replace(".jpg", "")
-                dt = datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S").replace(
-                    tzinfo=timezone.utc
-                )
+                # Filename is "{safe_key}_{YYYYmmdd}_{HHMMSS}.jpg". Parse from the
+                # END so shop names that themselves contain "_" (e.g. fejo_studio,
+                # osock_performance) still match — splitting on the FIRST "_"
+                # mangled them, so they never deduped and got re-shot every cycle.
+                name = filename[:-4] if filename.endswith(".jpg") else filename
+                shop, date_part, time_part = name.rsplit("_", 2)
+                dt = datetime.strptime(
+                    f"{date_part}_{time_part}", "%Y%m%d_%H%M%S"
+                ).replace(tzinfo=timezone.utc)
                 if shop not in latest_map or dt > latest_map[shop]:
                     latest_map[shop] = dt
             except Exception:
@@ -135,6 +228,48 @@ def screenshot_recently_uploaded_from_map(latest_map, safe_key, hours):
     if age < timedelta(hours=hours):
         return True
     return False
+
+
+# ----- blocklist probation state (persisted in R2) -----
+
+def read_probation_times(r2_client, bucket_name, prefix, safe_keys):
+    """Return {safe_key: datetime_of_last_probe} for the given blocklisted shops.
+
+    Each marker is a tiny object holding an ISO timestamp. A shop with no marker
+    is absent from the dict, which blocklisted_shop_due() reads as 'never probed
+    => due now'. Read failures (incl. missing object) are treated the same way."""
+    times = {}
+    for safe_key in safe_keys:
+        key = f"{prefix}{PROBATION_PREFIX}{safe_key}.txt"
+        try:
+            body = r2_client.get_object(Bucket=bucket_name, Key=key)["Body"].read()
+            times[safe_key] = datetime.fromisoformat(body.decode().strip())
+        except Exception:
+            continue
+    return times
+
+
+def write_probation_time(r2_client, bucket_name, prefix, safe_key, dt):
+    """Record dt as the last probe time for a blocklisted shop. Written BEFORE the
+    attempt so a hang/timeout still advances the clock (no hourly re-tries)."""
+    try:
+        r2_client.put_object(
+            Bucket=bucket_name,
+            Key=f"{prefix}{PROBATION_PREFIX}{safe_key}.txt",
+            Body=dt.isoformat().encode(),
+            ContentType="text/plain",
+        )
+    except Exception as e:
+        logger.error(f"Could not write probation marker for {safe_key}: {e}")
+
+
+def blocklisted_shop_due(probation_times, safe_key, hours):
+    """True if a blocklisted shop is due for a probation retry (never probed, or
+    last probe was at least `hours` ago)."""
+    last = probation_times.get(safe_key)
+    if last is None:
+        return True
+    return (datetime.now(timezone.utc) - last) >= timedelta(hours=hours)
 
 
 # ========================================
@@ -162,6 +297,8 @@ def make_chrome_driver():
 
     service = Service(os.environ.get("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
     driver = webdriver.Chrome(service=service, options=chrome_options)
+    # Abort a stuck page load instead of waiting out Selenium's ~300s default.
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
@@ -299,10 +436,39 @@ def run_cycle():
     r2 = make_r2_client()
     latest = build_latest_screenshot_map(r2, R2_BUCKET_NAME, R2_PREFIX)
 
+    # When was each blocklisted shop last given a probation retry?
+    probation = read_probation_times(
+        r2, R2_BUCKET_NAME, R2_PREFIX,
+        {k.replace(" ", "_") for k in SKIP_SHOPS},
+    )
+
     shot = skipped = failed = 0
+
+    # Install the per-shop wall-clock alarm handler once for this cycle.
+    signal.signal(signal.SIGALRM, _alarm_handler)
 
     for key, url in urls.items():
         safe_key = key.replace(" ", "_")
+
+        if key in SKIP_SHOPS or safe_key in SKIP_SHOPS:
+            # Blocklisted: skip, EXCEPT for a periodic probation retry (the 90s
+            # cap makes a probe safe; a still-broken shop just times out).
+            if not blocklisted_shop_due(probation, safe_key, BLOCKLIST_RETRY_HOURS):
+                logger.info(
+                    f"Skipping {key} — blocklisted (probation retry every "
+                    f"{BLOCKLIST_RETRY_HOURS}h)"
+                )
+                skipped += 1
+                continue
+            logger.info(
+                f"Probation retry for blocklisted {key} — last probe was "
+                f">={BLOCKLIST_RETRY_HOURS}h ago"
+            )
+            # Stamp the attempt BEFORE trying, so a hang can't cause hourly re-tries.
+            write_probation_time(
+                r2, R2_BUCKET_NAME, R2_PREFIX, safe_key,
+                datetime.now(timezone.utc),
+            )
 
         if screenshot_recently_uploaded_from_map(latest, safe_key, DEDUPE_HOURS):
             skipped += 1
@@ -310,19 +476,24 @@ def run_cycle():
 
         logger.info(f"Opening {key} -> {url}")
         driver = None
+        chromedriver_pid = None
         try:
+            signal.alarm(SHOP_TIMEOUT_SECONDS)
             driver = make_chrome_driver()
+            chromedriver_pid = driver.service.process.pid
             screenshot_one(driver, r2, key, url)
             shot += 1
+        except ShopTimeout:
+            failed += 1
+            logger.error(
+                f"Timeout on {key} after {SHOP_TIMEOUT_SECONDS}s — killing Chromium"
+            )
         except Exception as e:
             failed += 1
             logger.error(f"Error on {key}: {e}")
         finally:
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+            signal.alarm(0)  # cancel the per-shop alarm before teardown
+            cleanup_driver(driver, chromedriver_pid)
 
     return shot, skipped, failed
 
